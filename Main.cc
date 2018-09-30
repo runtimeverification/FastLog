@@ -5,6 +5,9 @@
 #include "LoggerConsts.h"
 #include "Utils.h"
 
+/// # times to (over)write the array.
+static int numIterations = 1000;
+
 enum LogOp {
     /// Do nothing. This is the baseline.
     NO_OP           = 1,
@@ -34,7 +37,7 @@ enum LogOp {
     LOG_EPOCH       = 9
 };
 
-__attribute__((noinline))
+__attribute__((noinline, target("no-sse")))
 void
 run_noop(int64_t* array, int length)
 {
@@ -45,12 +48,15 @@ run_noop(int64_t* array, int length)
 }
 
 __attribute__((noinline))
-void __tsan_write8_func(uint64_t pc, void* addr, uint64_t val)
+void
+__tsan_write8_func(uint64_t pc, int64_t*& addr, uint64_t val)
 {
-    // Do nothing.
+    // Somehow if we don't add an artificial use of "addr" here, calls to this
+    // function will be optimized away regardless of the "noinline" attribute.
+    escape(&addr);
 }
 
-__attribute__((noinline))
+__attribute__((noinline, target("no-sse")))
 void
 run_func(int64_t* array, int length)
 {
@@ -66,27 +72,20 @@ run_func(int64_t* array, int length)
  * out of the loop by the compiler.
  */
 __attribute__((always_inline))
-void __tsan_write8_inc_counter_inl(uint64_t pc, void* addr, uint64_t val)
-{
-    int* events = &getLogBuffer()->events;
-    escape(events);
-    (*events)++;
-    clobber();
-}
-
-__attribute__((noinline))
 void __tsan_write8_inc_counter(uint64_t pc, void* addr, uint64_t val)
 {
-    __tsan_write8_inc_counter_inl(pc, addr, val);
+    EventBuffer* logBuf = getLogBuffer();
+    escape(logBuf);
+    logBuf->events++;
 }
 
-__attribute__((noinline))
+__attribute__((noinline, target("no-sse")))
 void
 run_inc_counter(int64_t* array, int length)
 {
     for (int i = 0; i < length; i++) {
         int64_t* addr = &array[i];
-        __tsan_write8_inc_counter_inl(__LINE__, addr, i);
+        __tsan_write8_inc_counter(__LINE__, addr, i);
         (*addr) = i;
     }
 }
@@ -96,7 +95,7 @@ run_inc_counter(int64_t* array, int length)
  * overflow.
  */
 __attribute__((always_inline))
-void __tsan_write8_log_addr_inl(uint64_t pc, void* addr, uint64_t val)
+void __tsan_write8_log_addr(uint64_t pc, void* addr, uint64_t val)
 {
     EventBuffer* logBuf = getLogBuffer();
     logBuf->buf[logBuf->events++] = (uint64_t) addr;
@@ -105,19 +104,13 @@ void __tsan_write8_log_addr_inl(uint64_t pc, void* addr, uint64_t val)
     }
 }
 
-__attribute__((noinline))
-void __tsan_write8_log_addr(uint64_t pc, void* addr, uint64_t val)
-{
-    __tsan_write8_log_addr_inl(pc, addr, val);
-}
-
-__attribute__((noinline))
+__attribute__((noinline, target("no-sse")))
 void
 run_log_addr(int64_t* array, int length)
 {
     for (int i = 0; i < length; i++) {
         int64_t* addr = &array[i];
-        __tsan_write8_log_addr_inl(__LINE__, addr, i);
+        __tsan_write8_log_addr(__LINE__, addr, i);
         (*addr) = i;
     }
 }
@@ -126,7 +119,7 @@ run_log_addr(int64_t* array, int length)
  * (Ab)use the highest 4 bits of the address as the event header.
  */
 __attribute__((always_inline))
-void __tsan_write8_log_header_inl(uint64_t pc, void* addr, uint64_t val)
+void __tsan_write8_log_header(uint64_t pc, void* addr, uint64_t val)
 {
     // Note: for some reason, assigning the header as a byte by overwriting
     // the highest byte seems to be much slower than bit manipulation.
@@ -138,19 +131,13 @@ void __tsan_write8_log_header_inl(uint64_t pc, void* addr, uint64_t val)
     }
 }
 
-__attribute__((noinline))
-void __tsan_write8_header_addr(uint64_t pc, void* addr, uint64_t val)
-{
-    __tsan_write8_log_header_inl(pc, addr, val);
-}
-
-__attribute__((noinline))
+__attribute__((noinline, target("no-sse")))
 void
 run_log_header(int64_t* array, int length)
 {
     for (int i = 0; i < length; i++) {
         int64_t* addr = &array[i];
-        __tsan_write8_log_header_inl(__LINE__, addr, i);
+        __tsan_write8_log_header(__LINE__, addr, i);
         (*addr) = i;
     }
 }
@@ -159,7 +146,7 @@ run_log_header(int64_t* array, int length)
  * (Ab)use the next 8 bits of the address to store the last byte of the value.
  */
 __attribute__((always_inline))
-void __tsan_write8_log_value_inl(uint64_t pc, void* addr, uint64_t val)
+void __tsan_write8_log_value(uint64_t pc, void* addr, uint64_t val)
 {
     val = uint64_t((char) val) << 52;
     EventBuffer* logBuf = getLogBuffer();
@@ -170,19 +157,13 @@ void __tsan_write8_log_value_inl(uint64_t pc, void* addr, uint64_t val)
     }
 }
 
-__attribute__((noinline))
-void __tsan_write8_log_value(uint64_t pc, void* addr, uint64_t val)
-{
-    __tsan_write8_log_value_inl(pc, addr, val);
-}
-
-__attribute__((noinline))
+__attribute__((noinline, target("no-sse")))
 void
 run_log_value(int64_t* array, int length)
 {
     for (int i = 0; i < length; i++) {
         int64_t* addr = &array[i];
-        __tsan_write8_log_value_inl(__LINE__, addr, i);
+        __tsan_write8_log_value(__LINE__, addr, i);
         (*addr) = i;
     }
 }
@@ -192,7 +173,7 @@ run_log_value(int64_t* array, int length)
  * just the last 20 bits of CALLERPC for now).
  */
 __attribute__((always_inline))
-void __tsan_write8_log_src_loc_inl(uint64_t pc, void* addr, uint64_t val)
+void __tsan_write8_log_src_loc(uint64_t pc, void* addr, uint64_t val)
 {
     val = uint64_t((char) val) << 52;
     uint64_t loc = (pc << 44) >> 12;
@@ -204,19 +185,13 @@ void __tsan_write8_log_src_loc_inl(uint64_t pc, void* addr, uint64_t val)
     }
 }
 
-__attribute__((noinline))
-void __tsan_write8_log_src_loc(uint64_t pc, void* addr, uint64_t val)
-{
-    __tsan_write8_log_src_loc_inl(pc, addr, val);
-}
-
-__attribute__((noinline))
+__attribute__((noinline, target("no-sse")))
 void
 run_log_src_loc(int64_t* array, int length)
 {
     for (int i = 0; i < length; i++) {
         int64_t* addr = &array[i];
-        __tsan_write8_log_src_loc_inl(__LINE__, addr, i);
+        __tsan_write8_log_src_loc(__LINE__, addr, i);
         (*addr) = i;
     }
 }
@@ -241,7 +216,7 @@ __tsan_rdtsc()
  * Generate a timestamp every RDTSC_SAMPLING_RATE events.
  */
 __attribute__((always_inline))
-void __tsan_write8_log_timestamp_inl(uint64_t pc, void* addr, uint64_t val)
+void __tsan_write8_log_timestamp(uint64_t pc, void* addr, uint64_t val)
 {
     val = uint64_t((char) val) << 52;
     uint64_t loc = (pc << 44) >> 12;
@@ -258,19 +233,13 @@ void __tsan_write8_log_timestamp_inl(uint64_t pc, void* addr, uint64_t val)
     }
 }
 
-__attribute__((noinline))
-void __tsan_write8_log_timestamp(uint64_t pc, void* addr, uint64_t val)
-{
-    __tsan_write8_log_timestamp_inl(pc, addr, val);
-}
-
-__attribute__((noinline))
+__attribute__((noinline, target("no-sse")))
 void
 run_log_timestamp(int64_t* array, int length)
 {
     for (int i = 0; i < length; i++) {
         int64_t* addr = &array[i];
-        __tsan_write8_log_timestamp_inl(__LINE__, addr, i);
+        __tsan_write8_log_timestamp(__LINE__, addr, i);
         (*addr) = i;
     }
 }
@@ -325,13 +294,24 @@ run(LogOp logOp, int64_t* array, int length)
 }
 
 void
-workerMain(LogOp logOp, int64_t* array, int length)
+workerMain(int tid, LogOp logOp, int64_t* array, int length)
 {
-    // Run the experiment 1000 times.
-#define MAX_ITER 1000
-    for (int i = 0; i < MAX_ITER; i++) {
+    // Hack: only log_change_epoch contains code to handle NULL __log_buffer.
+    if (logOp <= LOG_TIMESTAMP) {
+        __log_buffer = new EventBuffer();
+    }
+
+    uint64_t startTime = rdtsc();
+
+    // Repeat the experiment many times.
+    for (int i = 0; i < numIterations; i++) {
         run(logOp, array, length);
     }
+
+    uint64_t totalTime = rdtsc() - startTime;
+    double numWriteOps = static_cast<double>(length) * numIterations * 1e-6;
+    printf("threadId %d, writeOps %.2fM, cyclesPerWrite %.2f\n", tid,
+            numWriteOps, totalTime / numWriteOps * 1e-6);
 }
 
 int main(int argc, char **argv) {
@@ -345,18 +325,19 @@ int main(int argc, char **argv) {
     LogOp logOp = NO_OP;
 
     if (argc == 4) {
-        logOp = static_cast<LogOp>(atoi(argv[1]));
-        numThreads = atoi(argv[2]);
-        length = atoi(argv[3]);
+        numThreads = atoi(argv[1]);
+        length = atoi(argv[2]);
+        logOp = static_cast<LogOp>(atoi(argv[3]));
     }
+    printf("numThreads %d, arrayLength %d, logOp %d\n", numThreads, length,
+            logOp);
 
     int64_t* array = new int64_t[numThreads * length];
     std::thread* workers[numThreads];
     for (int i = 0; i < numThreads; i++) {
-        workers[i] = new std::thread(workerMain, logOp, array + i * length,
+        workers[i] = new std::thread(workerMain, i, logOp, array + i * length,
                 length);
     }
-
     for (std::thread* worker : workers) {
         worker->join();
     }

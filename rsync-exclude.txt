@@ -1,0 +1,6 @@
+rsync*
+updateRemote
+build/
+.git/
+.idea/
+cmake*

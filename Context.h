@@ -14,4 +14,21 @@ getLogBuffer()
 //    return __atomic_load_n(&__log_buffer, __ATOMIC_RELAXED);
 }
 
+// TODO:
+struct Context {
+    Context()
+    {
+        printf("context initialized\n");
+    }
+
+    ~Context()
+    {
+        printf("context destroyed\n");
+    }
+
+    int i;
+};
+
+thread_local Context context;
+
 #endif //FASTLOG_CONTEXT_H

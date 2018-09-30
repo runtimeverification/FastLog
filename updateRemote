@@ -1,0 +1,4 @@
+#!/bin/bash
+# The script copies modified information from this directory on my laptop to
+# some remote work station.
+rsync -rtv --exclude-from=rsync-exclude.txt . yilongl@clnode239.clemson.cloudlab.us:~/FastLog

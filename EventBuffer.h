@@ -1,6 +1,8 @@
 #ifndef FASTLOG_EVENTBUFFER_H
 #define FASTLOG_EVENTBUFFER_H
 
+#include <cstdint>
+
 struct EventBuffer {
     explicit EventBuffer()
     {
