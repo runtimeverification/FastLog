@@ -37,13 +37,6 @@ enum LogOp {
     /// Log the source code location of the memory load/store.
     LOG_SRC_LOC,
 
-    /// Based on LOG_ADDR, use atomic load to prevent compiler from hoisting
-    /// the event buffer pointer to a constant local variable.
-    VOLATILE_BUF,
-
-    /// Optimize VOLATILE_BUF by only doing the atomic load periodically.
-    VOLATILE_BUF_OPT,
-
     /// Generate RDTSC events periodically.
     LOG_TIMESTAMP,
 
@@ -204,43 +197,6 @@ run_volatile_buffer_ptr(int64_t* array, int length)
     }
 }
 
-/**
- * TODO: based on above; try to optimize it to an extreme!!!
- */
- /*
-__attribute__((always_inline))
-void
-__tsan_write8_volatile_bufptr_opt(EventBuffer*& logBuf, uint64_t pc, void* addr,
-        uint64_t val)
-{
-    logBuf->buf[logBuf->events] = (uint64_t) addr;
-    if (UNLIKELY(logBuf->events++ >= logBuf->nextBufPtrReloadTime)) {
-        logBuf->nextBufPtrReloadTime += EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
-        if (UNLIKELY(logBuf->events >= EventBuffer::MAX_EVENTS)) {
-            logBuf->events = 0;
-            logBuf->nextBufPtrReloadTime = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
-        }
-        logBuf = getLogBufferAtomic();
-    }
-//    if (UNLIKELY(logBuf->eventsToRdtsc-- == 0)) {
-//        logBuf = getLogBufferAtomic();
-//        logBuf->eventsToRdtsc = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
-//        if (UNLIKELY(logBuf->events >= EventBuffer::MAX_EVENTS)) {
-//            logBuf->events = 0;
-//        }
-////        EventBuffer* old = logBuf;
-////        logBuf = getLogBufferAtomic();
-////        if (old == logBuf) {
-////            logBuf->eventsToRdtsc = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
-////            if (UNLIKELY(logBuf->events >= EventBuffer::MAX_EVENTS)) {
-////                logBuf->events = 0;
-////            }
-////        }
-//    }
-}
-  */
-
-
 // FIXME: FIGURE OUT WHY USING NOINLINE WILL SLOW DOWN THE PERFORMANCE SIGNIFICANTLY.
 // THE RESULTING HOT LOOP IS 12 INSN (AS OPPOSED TO 11)...
 // __attribute__((noinline))
@@ -385,156 +341,6 @@ run_log_src_loc(int64_t* array, int length)
 }
 
 /**
- * FIXME: the doc. is out-dated.
- *
- * Similar to __tsan_write8_log_addr, except that we use atomic operation to
- * load the thread local event buffer pointer so that the compiler cannot hoist
- * it into a constant local variable.
- */
-__attribute__((always_inline))
-void __tsan_write8_volatile_buf(uint64_t pc, void* addr, uint64_t val)
-{
-    // FIXME: this is not very interesting; the generated asm is just one insn
-    // loading the thread_local variable into a unused register; since there is
-    // no data dependency (I guess) the resulting asm is super-fast...
-    getLogBufferAtomic();
-}
-
-__attribute__((noinline, target("no-sse")))
-void
-run_volatile_buffer(int64_t* array, int length)
-{
-    for (int i = 0; i < length; i++) {
-        int64_t* addr = &array[i];
-        __tsan_write8_volatile_buf(__LINE__, addr, i);
-        (*addr) = i;
-    }
-}
-
-// FIXME: the following implementation is WRONG! To the compiler, the updated
-// logBuf is an entirely different local var. (or, register)!
-/**
- * Attempts to optimize __tsan_write8_volatile_buf by only doing the atomic load
- * periodically. As a result, after inlining, the compiler will still hoist
- * `getLogBuffer` to a local variable; however, now the variable can be updated
- * by `getLogBufferAtomic` periodically.
- */
-__attribute__((always_inline))
-void __tsan_write8_volatile_buf_sloppy(LocalContext* ctx, uint64_t pc, void* addr, uint64_t val)
-//void __tsan_write8_volatile_buf_sloppy(EventBuffer*& logBuf, int& events,
-//        uint64_t*& buf, uint64_t pc, void* addr, uint64_t val)
-{
-    ctx->buf[ctx->events++] = (uint64_t)addr;
-    ctx->refetchCounter++;
-    if (UNLIKELY(ctx->refetchCounter == EventBuffer::BUFFER_PTR_RELOAD_PERIOD)) {
-        ctx->update();
-        if (ctx->events >= EventBuffer::MAX_EVENTS) {
-            ctx->events = 0;
-        }
-    }
-//    buf[events++] = (uint64_t)addr;
-//    if (UNLIKELY(events == EventBuffer::BUFFER_PTR_RELOAD_PERIOD)) {
-//        // Flush cache copies.
-//        logBuf->events = events;
-//
-//        // Re-fetch our buffer pointer.
-//        logBuf = getLogBufferAtomic();
-//
-//        // Populate cache again.
-//        events = 0;
-////        events = logBuf->events;
-//        buf = logBuf->buf;
-//    }
-}
-//__attribute__((always_inline))
-//void __tsan_write8_volatile_buf_sloppy(EventBuffer*& logBuf, uint64_t pc,
-//        void* addr, uint64_t val)
-//{
-//    logBuf->buf[logBuf->events++] = (uint64_t)addr;
-//    if (UNLIKELY(logBuf->events == EventBuffer::BUFFER_PTR_RELOAD_PERIOD)) {
-//        logBuf = getLogBufferAtomic();
-//        logBuf->events = 0;
-//    }
-//}
-
-__attribute__((noinline, target("no-sse")))
-void
-run_volatile_buffer_sloppy(int64_t* array, int length)
-{
-//    // TODO: Note: this requires extra instrumentation support.
-//    EventBuffer* logBuf = getLogBuffer();
-//    // TODO: introduce local copy of logBuf->{events, buf}
-//    int events = logBuf->events;
-//    uint64_t* buf = logBuf->buf;
-    LocalContext localContext;
-
-    for (int i = 0; i < length; i++) {
-        int64_t* addr = &array[i];
-        __tsan_write8_volatile_buf_sloppy(&localContext, __LINE__, addr, i);
-//        __tsan_write8_volatile_buf_sloppy(localContext, __LINE__, addr, i);
-//        __tsan_write8_volatile_buf_sloppy(logBuf, __LINE__, addr, i);
-        (*addr) = i;
-    }
-
-//    // Flush local copies
-//    logBuf->events = events;
-}
-
-__attribute__((always_inline))
-void __tsan_write8_fast(uint64_t pc, void* addr, uint64_t val)
-{
-    EventBuffer* logBuf = getLogBuffer();
-    static __thread int events;
-    static __thread int eventsToAtomicLoad;
-    static __thread uint64_t* buf;
-    buf = logBuf->buf;
-
-    buf[events++] = (uint64_t)addr;
-    eventsToAtomicLoad++;
-    if (UNLIKELY(eventsToAtomicLoad == EventBuffer::BUFFER_PTR_RELOAD_PERIOD)) {
-        logBuf->events = events;
-        logBuf = getLogBufferAtomic();
-        events = logBuf->events;
-        buf = logBuf->buf;
-    }
-}
-
-__thread int __events;
-__thread int __eventsToAtomicLoad;
-__thread uint64_t* __buf;
-
-__attribute__((noinline, target("no-sse")))
-void
-run_fast(int64_t* array, int length)
-{
-//    int events = __events;
-//    int eventsToAtomicLoad = __eventsToAtomicLoad;
-//    uint64_t* buf = __buf;
-
-    for (int i = 0; i < length; i++) {
-        int64_t* addr = &array[i];
-#if 1
-        EventBuffer* logBuf = getLogBuffer();
-        logBuf->buf[__events++] = (uint64_t)addr;
-        if (UNLIKELY(__events == EventBuffer::BUFFER_PTR_RELOAD_PERIOD)) {
-            // Flush the cached copies.
-            logBuf->events = __events;
-
-            // Re-fetch the event buffer pointer. Might get a different one.
-            logBuf = getLogBufferAtomic();
-
-            // Re-populate the cache.
-            __events = logBuf->events;
-
-        }
-#else
-        __tsan_write8_fast(__LINE__, addr, i);
-#endif
-        (*addr) = i;
-    }
-}
-
-/**
  * Log a timestamp event. Extracted from __tsan_write8_log_timestamp_inl
  * so it doesn't have to be inlined.
  */
@@ -626,12 +432,6 @@ run(LogOp logOp, int64_t* array, int length)
 //            break;
 //        case LOG_SRC_LOC:
 //            run_log_src_loc(array, length);
-//            break;
-//        case VOLATILE_BUF:
-//            run_volatile_buffer(array, length);
-//            break;
-//        case VOLATILE_BUF_OPT:
-//            run_volatile_buffer_sloppy(array, length);
 //            break;
 //        case LOG_TIMESTAMP:
 //            run_log_timestamp(array, length);
