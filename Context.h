@@ -11,7 +11,13 @@ EventBuffer*
 getLogBuffer()
 {
     return __log_buffer;
-//    return __atomic_load_n(&__log_buffer, __ATOMIC_RELAXED);
+}
+
+__attribute__((always_inline))
+EventBuffer*
+getLogBufferAtomic()
+{
+    return __atomic_load_n(&__log_buffer, __ATOMIC_RELAXED);
 }
 
 // TODO:
@@ -30,5 +36,46 @@ struct Context {
 };
 
 thread_local Context context;
+
+struct LocalContext {
+    EventBuffer* logBuf;
+    int events;
+    int refetchCounter;
+    uint64_t* buf;
+
+    LocalContext()
+        : logBuf(getLogBuffer())
+        , events(logBuf->events)
+        , refetchCounter(logBuf->refetchCounter)
+        , buf(logBuf->buf)
+    {}
+
+    ~LocalContext()
+    {
+        flush();
+    }
+
+    void flush()
+    {
+        if (logBuf) {
+            logBuf->events = events;
+            logBuf->refetchCounter = refetchCounter;
+        }
+    }
+
+    /// Flush and reload.
+    void update()
+    {
+        refetchCounter = 0;
+        flush();
+        EventBuffer* oldLogBuf = logBuf;
+        logBuf = getLogBufferAtomic();
+        if (logBuf && (logBuf != oldLogBuf)) {
+            events = logBuf->events;
+            refetchCounter = logBuf->refetchCounter;
+            buf = logBuf->buf;
+        }
+    }
+};
 
 #endif //FASTLOG_CONTEXT_H

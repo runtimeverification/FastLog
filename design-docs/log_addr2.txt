@@ -1,0 +1,25 @@
+run_log_addr(long*, int):
+        test    esi, esi
+        jle     .L53
+        mov     r10, QWORD PTR fs:__log_buffer@tpoff
+        sub     esi, 1
+        xor     edx, edx
+        add     rsi, 1
+        mov     rax, QWORD PTR [r10]
+        mov     r9, QWORD PTR [r10+8]
+        lea     r8, [r10+24]
+.L56:
+        lea     rcx, [rax+8]
+        cmp     r9, rax
+        mov     QWORD PTR [rax], rdi
+        mov     QWORD PTR [rdi], rdx
+        mov     rax, rcx
+        cmove   rax, r8
+        add     rdx, 1
+        add     rdi, 8
+        cmp     rsi, rdx
+        jne     .L56
+        mov     QWORD PTR [r10], rax
+.L53:
+        rep ret
+

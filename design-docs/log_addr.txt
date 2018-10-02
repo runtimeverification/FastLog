@@ -1,0 +1,28 @@
+run_log_addr(long*, int):
+        test    esi, esi
+        jle     .L50
+        mov     r8, QWORD PTR fs:__log_buffer@tpoff // r8 is `logBuf`
+        sub     esi, 1
+        xor     edx, edx
+        add     rsi, 1
+        xor     r9d, r9d
+        mov     eax, DWORD PTR [r8+4]               // eax is `logBuf->events`?
+.L53:
+        movsx   rcx, eax                            // rcx is also `logBuf->events` (signed ext'ed)
+        cmp     eax, 10000                          // 
+        mov     QWORD PTR [r8+16+rcx*8], rdi        // `logBuf[events] = addr`; rdi is `addr`
+        lea     ecx, [rax+1]                        // put `events + 1` into ecx?
+        mov     QWORD PTR [rdi], rdx                // `(*addr) = i`
+        mov     eax, ecx                            // `events = events + 1`
+        cmove   eax, r9d                            // reset `events` to 0 if cmp above is true
+        add     rdx, 1                              // rdx is `i`; `i += 1`
+        add     rdi, 8                              // rdi is `&array[i]` (or `addr`)
+        cmp     rsi, rdx                            // rsi is `length`
+        jne     .L53
+        mov     DWORD PTR [r8+4], eax
+.L50:
+        rep ret
+
+
+Comments:
+* 11 insn per iteration in the hot loop

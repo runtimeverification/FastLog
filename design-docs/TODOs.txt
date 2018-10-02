@@ -1,0 +1,59 @@
+TODO Tasks:
+
+* diff patch against release_70 to log value in reads & writes
+    * https://groups.google.com/forum/#!topic/thread-sanitizer/SCcKNgdrBkY
+    
+* Profile tsan to understand the overhead of each part of logging
+    * minimal: modify vanilla tsan to log events to a per-thread buffer (note: vary buffer size to see if it makes a difference); don't capture value; 
+    * +struct packing: hmmm, does it matter? How much space we can save?
+    * +mod: possible to avoid the "(n + 1) % BUFFER_SIZE" operation? nvm, mod seems like a bad choice here anyway: https://stackoverflow.com/questions/15596318/is-it-better-to-avoid-using-the-mod-operator-when-possible
+    * +rdtsc: append rdtsc to each event (note: also try sampling)
+    * +value: modify tsan instrumentation pass and runtime library to capture values (this requires non-trivial changes; don't do this unless absolutely necessary)
+    * +consumer: add a dummy consumer that simply discards events
+    
+* Investigate the startup overhead of tsan and its impact on small programs
+    * for small single-threaded unit test program, our goal is to have (almost) zero overhead
+    
+* Figure out why tsan is only instrumenting half of the writes in `mini_bench_local` program.
+    * Answer: tsan instrumentation is run after the LLVM loop unrolling pass has merged two 32-bit writes into one 64-bit write (pretty nice, huh?)
+    
+* Figure out how to inline static library functions
+    * obviously, it's quite expensive to call __tsan_writeX on every write (e.g. After removing the body of method `MemoryAccess` in tsan, the overhead is still 2x for the mini_bench_local example)
+    * https://stackoverflow.com/questions/16384839/static-library-performance-possible-to-inline-calls
+    
+* Figure out why TSAN is only 10X slower on mini_bench_local example. Isn't this the pathological case for tsan?
+    * Obviously, no. All of the writes (except the initial ones) are returned after `ContainsSameAccess`; they don't make it to the `MemoryAccessImpl1`.
+    * We need to construct a test case that makes it to `MemoryAccessImpl1` and exercise `tsan_update_shadow_word_inl.h` as much as possible.
+    * Can we find some realistic examples that stress tsan like the one above (e.g. DB, KV store, Multi-threaded FS, etc.)? Perhaps storage systems will put more pressure on tsan than browsers?
+    
+* Who is responsible for incrementing the epoch (i.e. the buffer ptr)? And how?
+    * Strawman 1: one of the app thread
+        +
+        -
+    * Strawman 2: some RVP runtime thread
+        +
+        -
+    
+* rdtsc timestamp events cannot be naively used as barriers. What's the implication of this during trace reassembling?
+    * do we need to use RDTSCP and CPUID to strengthen the guarantee?
+    
+* Offset-based access vs. "iterator"-style access: Which is better and why?
+    * offset-based: maintain `events`, increment for each new event
+    * iterator-based: use a field `logBuf->next` to represent `logBuf->buf[events]`, update `next` instead of `events`; `events` can be computed on the fly
+    
+* Slow-path period check: what is the most efficient way to implement it?
+    * Countdown style: keep a separate `eventsToXXX` field; decrement and compare with 0 every iter
+    * Deadline style: keep a `nextReloadTime`; no need to update in fast path; compare with `events` every iter
+    * deadline-style is 1 insn less but somehow I got worse result??? (need to verify)
+    
+* Sources of overhead to consider and benchmark
+    * Function call (e.g. couldn't get static library function inlining to work)
+    * TLS variable defined in dynamic library
+        * No need to benchmark for now; we are not building dynamic library
+        * http://david-grs.github.io/tls_performance_overhead_cost_linux/
+        * https://gcc.gnu.org/bugzilla/show_bug.cgi?id=55354
+    * # extra instructions instrumented into the hot loop (especially non-trivial ones; c.f. Agner Fog's handbook?)
+        * Pay attention to instructions whose operands are memory locations (as opposed to registers)
+        * Indirect access (e.g. our "__thread EventBuffer* __log_buffer")
+    * Data-dependency between instructions
+        * For example: read __log_buffer => read __log_buffer->{events, buf, eventsToRdtsc} vs. cache EventBuffer::{events, buf, ...} in TLS so that all these reads can be issued concurrently

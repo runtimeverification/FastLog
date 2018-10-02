@@ -1,0 +1,284 @@
+run_volatile_buffer_ptr_opt(long*, int):
+        mov     r10, QWORD PTR fs:__log_buffer@tpoff    // r10 is `logBuf`
+        test    esi, esi
+        mov     r11, r10
+        mov     edx, DWORD PTR [r10+16]     // edx is `logBuf->events`
+        mov     r8d, DWORD PTR [r10+20]     // r8 is `logBuf->reloadTime`
+        lea     r9, [r10+24]                // r9 is `logBuf->buf`
+        jle     .L89
+        sub     esi, 1
+        xor     eax, eax
+        add     rsi, 1
+        jmp     .L88
+.L91:
+        mov     edx, ecx                    // `events = events + 1`
+.L88:
+        movsx   rcx, edx                    // make a copy of `events` into rcx
+        cmp     r8d, edx                    // `events == reloadTime`?
+        mov     QWORD PTR [r9+rcx*8], rdi   // `buf[events] = addr`
+        lea     ecx, [rdx+1]                // ecx is `events + 1`
+        jle     .L92
+.L86:
+        mov     QWORD PTR [rdi], rax        // `*addr = i`
+        add     rax, 1                      // rax is `i`; `i += 1`
+        add     rdi, 8                      // rdi is `addr`
+        cmp     rsi, rax                    // rsi is `length`; `i == length`?
+        jne     .L91
+.L85:
+        mov     rax, QWORD PTR .LC3[rip]
+        mov     QWORD PTR [rsp-8], rax
+        mov     DWORD PTR [rsp-8], ecx
+        mov     rax, QWORD PTR [rsp-8]
+        mov     QWORD PTR [rsp-16], rax
+        mov     DWORD PTR [rsp-12], r8d
+        mov     rax, QWORD PTR [rsp-16]
+        mov     QWORD PTR [r10+16], rax
+        ret
+.L92:
+        add     r8d, 64
+        cmp     ecx, 9999
+        jg      .L93
+.L87:
+        mov     rdx, QWORD PTR fs:__log_buffer@tpoff
+        cmp     r11, rdx
+        je      .L86
+        mov     DWORD PTR [r11+16], ecx
+        lea     r9, [rdx+24]
+        mov     r11, rdx
+        mov     r8d, 64
+        xor     ecx, ecx
+        jmp     .L86
+.L89:
+        mov     ecx, edx
+        jmp     .L85
+.L93:
+        movsx   rcx, ecx
+        mov     r8d, 64
+        add     QWORD PTR fs:EventBuffer::totalEvents@tpoff, rcx
+        xor     ecx, ecx
+        jmp     .L87
+
+Comments:
+* Only 11 insn (same as LOG_ADDR)
+* Performance very good (same as LOG_ADDR?)
+* Key idea: detach buffer state access from `__log_buffer` (when `__log_buffer` is loaded using atomic op, __log_buffer->{events, buf, etc.} cannot be hoisted to registers by compiler); build a EventBuffer::Ref object (ie. a shallow copy of EventBuffer).
+* Need instrumentation support
+
+Source code:
+void
+__tsan_write8_volatile_bufptr_opt_slow(EventBuffer*& logBuf, uint64_t*& buf,
+        int &events, int &reloadTime)
+{
+    reloadTime += EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
+    if (UNLIKELY(events >= EventBuffer::MAX_EVENTS)) {
+        EventBuffer::totalEvents += events; // DEBUG ONLY
+        events = 0;
+        reloadTime = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
+    }
+    EventBuffer* old = logBuf;
+    logBuf = getLogBufferAtomic();
+    if (UNLIKELY(old != logBuf)) {
+        // Write-back.
+        old->events = events;
+        // Create a "reference" to the new event buffer.
+        buf = logBuf->buf;
+        events = 0;
+        reloadTime = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
+        // DEBUG ONLY
+        EventBuffer::totalEvents += events;
+    }
+}
+
+__attribute__((always_inline))
+void
+__tsan_write8_volatile_bufptr_opt(EventBuffer*& logBuf, uint64_t*& buf,
+        int& events, int& reloadTime, uint64_t pc, void* addr, uint64_t val)
+{
+    buf[events] = (uint64_t) addr;
+    if (UNLIKELY(events++ >= reloadTime)) {
+        __tsan_write8_volatile_bufptr_opt_slow(logBuf, buf, events, reloadTime);
+    }
+}
+
+__attribute__((noinline, target("no-sse")))
+void
+run_volatile_buffer_ptr_opt(int64_t* array, int length)
+{
+    // TODO: can we get rid of this?
+    EventBuffer* logBuf = getLogBuffer();
+    int events = logBuf->events;
+    int reloadTime = logBuf->nextBufPtrReloadTime;
+    uint64_t* buf = logBuf->buf;
+
+    for (int i = 0; i < length; i++) {
+        int64_t* addr = &array[i];
+        __tsan_write8_volatile_bufptr_opt(logBuf, buf, events, reloadTime,
+                __LINE__, addr, i);
+//        __tsan_write8_volatile_bufptr_opt(__LINE__, addr, i);
+        (*addr) = i;
+    }
+
+    // write-back
+    getLogBuffer()->events = events;
+    getLogBuffer()->nextBufPtrReloadTime = reloadTime;
+}
+
+
+
+======================================THE FOLLOWING IS TOO SLOW=================
+AND I AM ABLE TO FIGURE OUT WHY AND IMPROVE! SEE ABOVE! YAY!
+
+run_volatile_buffer_ptr_opt(long*, int):
+        test    esi, esi
+        mov     rax, QWORD PTR fs:__log_buffer@tpoff
+        jle     .L77
+        lea     r9d, [rsi-1]
+        mov     r10, QWORD PTR .LC3[rip]
+        xor     edx, edx
+        add     r9, 1
+.L81:
+        movsx   rsi, DWORD PTR [rax+16]         // rsi is `logBuf->events`
+        ^^^^^^^^ Aha! `logBuf->events` is loaded every iteration because `logBuf` is not const.
+        mov     rcx, rsi                        // make a copy of `events` to rcx
+        mov     QWORD PTR [rax+24+rsi*8], rdi   // `logBuf[events] = addr`; rdi is `addr`
+        lea     r8d, [rsi+1]                    // r8d is `events + 1`
+        mov     esi, DWORD PTR [rax+20]         // esi is `logBuf->nextReloadTime`
+        ^^^^^^^^ Aha! Because `logBuf` can change, {events, nextReloadTime} all have to be 
+                 reloaded every iteration.
+        mov     DWORD PTR [rax+16], r8d         // store `events + 1` back
+        cmp     ecx, esi
+        jge     .L83
+.L79:
+        mov     QWORD PTR [rdi], rdx            // `(*addr) = i`;
+        add     rdx, 1                          // rdx is `i`; `i += 1`
+        add     rdi, 8                          // rdi is `addr`
+        cmp     rdx, r9                         // r9 is `length`; `i == length`?
+        jne     .L81
+.L77:
+        rep ret
+.L83:
+        add     esi, 64
+        cmp     r8d, 9999
+        mov     DWORD PTR [rax+20], esi
+        jg      .L84
+.L80:
+        mov     rax, QWORD PTR fs:__log_buffer@tpoff
+        jmp     .L79
+.L84:
+        mov     QWORD PTR [rax+16], r10
+        jmp     .L80
+
+
+Comments:
+* No more load from TLS var in the hot loop but performance still bad (even negative improvement?)
+*
+
+
+Source code
+__attribute__((always_inline))
+void
+__tsan_write8_volatile_bufptr_opt(EventBuffer*& logBuf, uint64_t pc, void* addr,
+        uint64_t val)
+{
+    logBuf->buf[logBuf->events] = (uint64_t) addr;
+    if (UNLIKELY(logBuf->events++ >= logBuf->nextBufPtrReloadTime)) {
+        logBuf->nextBufPtrReloadTime += EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
+        if (UNLIKELY(logBuf->events >= EventBuffer::MAX_EVENTS)) {
+            logBuf->events = 0;
+            logBuf->nextBufPtrReloadTime = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
+        }
+        logBuf = getLogBufferAtomic();
+    }
+}
+
+===========================================OOOOOPS!========================================
+THE FOLLOWING SUPER-FAST CODE IS WRONG: FORGOT TO DO `events++`!!! ARGH!
+
+run_volatile_buffer_ptr_opt(long*, int):
+        test    esi, esi
+        mov     rdx, QWORD PTR fs:__log_buffer@tpoff    // rdx is `logBuf`
+        jle     .L77
+        lea     r8d, [rsi-1]
+        xor     eax, eax
+        add     r8, 1
+.L81:
+        movsx   rsi, DWORD PTR [rdx+16]         // rsi is `logBuf->events`
+        mov     rcx, rsi                        // make a copy of `events` in rcx
+        mov     QWORD PTR [rdx+24+rsi*8], rdi   // `logBuf[events] = addr`; rdi is `addr`
+        mov     esi, DWORD PTR [rdx+20]         // esi is `logBuf->nextReloadTime`
+        cmp     ecx, esi                        // time to reload buf ptr?
+        jge     .L83
+.L79:
+        mov     QWORD PTR [rdi], rax            // `(*addr) = i`
+        add     rax, 1                          // rax is `i`; `i += 1`
+        add     rdi, 8                          // rdi is `&array[i]` (or `addr`)
+        cmp     r8, rax                         // r8 is `length`
+        jne     .L81
+.L77:
+        rep ret
+.L83:
+        add     esi, 64
+        cmp     ecx, 9999
+        mov     DWORD PTR [rdx+20], esi
+        jg      .L84
+.L80:
+        mov     rdx, QWORD PTR fs:__log_buffer@tpoff
+        jmp     .L79
+.L84:
+        mov     DWORD PTR [rdx+16], 0
+        jmp     .L80
+
+
+Comments:
+* (Only) 11 insn per iteration in the hot loop; same as LOG_ADDR!
+* It even runs faster than LOG_ADDR!? How come?
+* 
+
+
+
+Appendix: Source code
+
+__attribute__((always_inline))
+void
+__tsan_write8_volatile_bufptr_opt(EventBuffer*& logBuf, uint64_t pc, void* addr,
+        uint64_t val)
+{
+    logBuf->buf[logBuf->events] = (uint64_t) addr;
+    if (UNLIKELY(logBuf->events >= logBuf->nextBufPtrReloadTime)) {
+        logBuf->nextBufPtrReloadTime += EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
+        if (UNLIKELY(logBuf->events >= EventBuffer::MAX_EVENTS)) {
+            logBuf->events = 0;
+        }
+        logBuf = getLogBufferAtomic();
+    }
+//    if (UNLIKELY(logBuf->eventsToRdtsc-- == 0)) {
+//        logBuf = getLogBufferAtomic();
+//        logBuf->eventsToRdtsc = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
+//        if (UNLIKELY(logBuf->events >= EventBuffer::MAX_EVENTS)) {
+//            logBuf->events = 0;
+//        }
+////        EventBuffer* old = logBuf;
+////        logBuf = getLogBufferAtomic();
+////        if (old == logBuf) {
+////            logBuf->eventsToRdtsc = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
+////            if (UNLIKELY(logBuf->events >= EventBuffer::MAX_EVENTS)) {
+////                logBuf->events = 0;
+////            }
+////        }
+//    }
+}
+
+__attribute__((noinline, target("no-sse")))
+void
+run_volatile_buffer_ptr_opt(int64_t* array, int length)
+{
+    // TODO: can we get rid of this?
+    EventBuffer* logBuf = getLogBuffer();
+
+    for (int i = 0; i < length; i++) {
+        int64_t* addr = &array[i];
+        __tsan_write8_volatile_bufptr_opt(logBuf, __LINE__, addr, i);
+        (*addr) = i;
+    }
+}
+

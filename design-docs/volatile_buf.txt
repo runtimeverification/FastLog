@@ -1,0 +1,44 @@
+run_volatile_buffer_ptr(long*, int):
+        test    esi, esi
+        jle     .L66
+        lea     r8d, [rsi-1]
+        xor     eax, eax
+        add     r8, 1
+        
+        
+.L68:
+        mov     rdx, QWORD PTR fs:__log_buffer@tpoff    // rdx is `logBuf`
+        movsx   rsi, DWORD PTR [rdx+4]              // rsi is `events`
+        mov     rcx, rsi                            // copy the current value of `events` to rcx
+        mov     QWORD PTR [rdx+16+rsi*8], rdi       // `logBuf[events] = addr`; rdi is `addr`
+        lea     esi, [rsi+1]                        // compute `events + 1`
+        cmp     ecx, 10000                          // compare the old val. of `events` to MAX_EV
+        mov     DWORD PTR [rdx+4], esi              // `events += 1`
+        je      .L71
+        mov     QWORD PTR [rdi], rax                // `(*addr[i]) = i`
+        add     rax, 1                              // rax is `i`; `i++`
+        add     rdi, 8                              // rdi is `&array[i]`
+        cmp     rax, r8                             // r8 is `length`
+        jne     .L68
+.L66:
+        rep ret
+.L71:
+        mov     DWORD PTR [rdx+4], 0
+        mov     QWORD PTR [rdi], rax
+        add     rax, 1
+        add     rdi, 8
+        cmp     rax, r8
+        jne     .L68
+        rep ret
+
+
+Comments:
+* 13 insn per iteration in the hot loop
+* The first insn has to access L1 cache; data not present in registers
+* The first three insns in the hot loop are serialized!
+    * read `logBuf` ~> read `logBuf->events` ~> copy old value of `logBuf->events`
+* The fourth insn, which is the actual log operation, can't start till 2nd insn (i.e. movsx rsi, ...) is done
+    * This is a relatively expensive insn: write to memory
+    
+* Last three insns (i.e. loop prologue) are the same as LOG_ADDR
+
