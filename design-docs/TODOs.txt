@@ -45,7 +45,12 @@ TODO Tasks:
     * Countdown style: keep a separate `eventsToXXX` field; decrement and compare with 0 every iter
     * Deadline style: keep a `nextReloadTime`; no need to update in fast path; compare with `events` every iter
     * deadline-style is 1 insn less but somehow I got worse result??? (need to verify)
-    
+
+* Post-inc vs. pre-inc when checking slow path condition
+	* SLOPPY_BUF_PTR seems to be faster with post-inc (even if it's one insn more than pre-inc)
+		* I notice a significant increase in branch-miss
+	* LOG_SRC_LOC seems to be faster with pre-inc (both have same # insns)
+
 * Sources of overhead to consider and benchmark
     * Function call (e.g. couldn't get static library function inlining to work)
     * TLS variable defined in dynamic library

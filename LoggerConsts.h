@@ -5,6 +5,12 @@
 
 // FIXME: what does static global mean in header again?
 
+/// Layout of a 64-bit event
+/// Header: 4 bit
+/// SrcLoc: 20 bit (~1M)
+/// Value: 8 bit (last byte of actual value)
+/// Address: 32 bit (address space is 48-bit)
+
 static const uint64_t TSAN_HDR_ZERO_MASK = ~(((uint64_t) 0b1111) << 60);
 static const uint64_t TSAN_VAL_ZERO_MASK = ~(((uint64_t) 0b111111111111) << 52);
 static const uint64_t TSAN_LOC_ZERO_MASK = ~(((uint64_t) 0xFFFFFFFF) << 32);

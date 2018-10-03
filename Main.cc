@@ -37,6 +37,10 @@ enum LogOp {
     /// Log the source code location of the memory load/store.
     LOG_SRC_LOC,
 
+    /// A relatively full implementation by combining LOG_SRC_LOC and
+    /// SLOPPY_BUF_PTR.
+    LOG_FULL,
+
     /// Generate RDTSC events periodically.
     LOG_TIMESTAMP,
 
@@ -57,6 +61,7 @@ opcodeToString(LogOp op)
     case LOG_HEADER:            return "LOG_HEADER";
     case LOG_VALUE:             return "LOG_VALUE";
     case LOG_SRC_LOC:           return "LOG_SRC_LOC";
+    case LOG_FULL:              return "LOG_FULL";
     case LOG_TIMESTAMP:         return "LOG_TIMESTAMP";
     default:
         char s[50] = {};
@@ -201,37 +206,31 @@ run_volatile_buffer_ptr(int64_t* array, int length)
 // THE RESULTING HOT LOOP IS 12 INSN (AS OPPOSED TO 11)...
 // __attribute__((noinline))
 void
-__tsan_write8_volatile_bufptr_opt_slow(EventBuffer*& logBuf, uint64_t*& buf,
-        int &events, int &reloadTime)
+__tsan_write8_volatile_bufptr_opt_slow(EventBuffer::Ref* ref)
 {
-    reloadTime += EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
-    if (UNLIKELY(events >= EventBuffer::MAX_EVENTS)) {
-        EventBuffer::totalEvents += events; // DEBUG ONLY
-        events = 0;
-        reloadTime = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
+    // Most likely, the event buffer pointer has not changed. Update alive time
+    // and check if the buffer is full anyway.
+    ref->checkAliveTime += EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
+    if (UNLIKELY(ref->events >= EventBuffer::MAX_EVENTS)) {
+        // Note: the real implementation will not wrap around; instead, it will
+        // contact the buffer manager to advance the epoch.
+        EventBuffer::totalEvents += ref->events;
+        ref->events = 0;
+        ref->checkAliveTime = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
     }
-    EventBuffer* old = logBuf;
-    logBuf = getLogBufferAtomic();
-    if (UNLIKELY(old != logBuf)) {
-        // Write-back.
-        old->events = events;
-        // Create a "reference" to the new event buffer.
-        buf = logBuf->buf;
-        events = 0;
-        reloadTime = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
-        // DEBUG ONLY
-        EventBuffer::totalEvents += events;
-    }
+
+    // Reload the latest event buffer pointer.
+    ref->checkUpdate(getLogBufferAtomic());
 }
 
 __attribute__((always_inline))
 void
-__tsan_write8_volatile_bufptr_opt(EventBuffer*& logBuf, uint64_t*& buf,
-        int& events, int& reloadTime, uint64_t pc, void* addr, uint64_t val)
+__tsan_write8_volatile_bufptr_opt(EventBuffer::Ref* ref, uint64_t pc,
+        void* addr, uint64_t val)
 {
-    buf[events] = (uint64_t) addr;
-    if (UNLIKELY(events++ >= reloadTime)) {
-        __tsan_write8_volatile_bufptr_opt_slow(logBuf, buf, events, reloadTime);
+    ref->buf[ref->events] = (uint64_t) addr;
+    if (UNLIKELY(ref->events++ >= ref->checkAliveTime)) {
+        __tsan_write8_volatile_bufptr_opt_slow(ref);
     }
 }
 
@@ -239,25 +238,14 @@ __attribute__((noinline, target("no-sse")))
 void
 run_volatile_buffer_ptr_opt(int64_t* array, int length)
 {
-    // TODO: can we get rid of this?
-    EventBuffer* logBuf = getLogBuffer();
-    int events = logBuf->events;
-    int reloadTime = logBuf->nextBufPtrReloadTime;
-    uint64_t* buf = logBuf->buf;
+    EventBuffer::Ref bufRef = getLogBuffer()->getRef();
 
     for (int i = 0; i < length; i++) {
         int64_t* addr = &array[i];
-        __tsan_write8_volatile_bufptr_opt(logBuf, buf, events, reloadTime,
-                __LINE__, addr, i);
-//        __tsan_write8_volatile_bufptr_opt(__LINE__, addr, i);
+        __tsan_write8_volatile_bufptr_opt(&bufRef, __LINE__, addr, i);
         (*addr) = i;
     }
-
-    // write-back
-    getLogBuffer()->events = events;
-    getLogBuffer()->nextBufPtrReloadTime = reloadTime;
 }
-
 
 /**
  * (Ab)use the highest 4 bits of the address as the event header.
@@ -268,9 +256,9 @@ void __tsan_write8_log_header(uint64_t pc, void* addr, uint64_t val)
     // Note: assigning the header as a byte by overwriting the highest byte
     // seems to be much slower than bit manipulation.
     EventBuffer* logBuf = getLogBuffer();
-    logBuf->buf[logBuf->events++] =
+    logBuf->buf[logBuf->events] =
             TSAN_WRITE8 | (TSAN_HDR_ZERO_MASK & (uint64_t) addr);
-    if (UNLIKELY(logBuf->events == EventBuffer::MAX_EVENTS)) {
+    if (UNLIKELY(logBuf->events++ == EventBuffer::MAX_EVENTS)) {
         logBuf->events = 0;
     }
 }
@@ -294,9 +282,9 @@ void __tsan_write8_log_value(uint64_t pc, void* addr, uint64_t val)
 {
     val = uint64_t((char) val) << 52;
     EventBuffer* logBuf = getLogBuffer();
-    logBuf->buf[logBuf->events++] =
+    logBuf->buf[logBuf->events] =
             TSAN_WRITE8 | val | (TSAN_VAL_ZERO_MASK & (uint64_t)addr);
-    if (UNLIKELY(logBuf->events >= EventBuffer::MAX_EVENTS)) {
+    if (UNLIKELY(logBuf->events++ >= EventBuffer::MAX_EVENTS)) {
         logBuf->events = 0;
     }
 }
@@ -319,12 +307,15 @@ run_log_value(int64_t* array, int length)
 __attribute__((always_inline))
 void __tsan_write8_log_src_loc(uint64_t pc, void* addr, uint64_t val)
 {
-    val = uint64_t((char) val) << 52;
-    uint64_t loc = (pc << 44) >> 12;
+    uint64_t loc = (pc << 44) >> 4;
+    val = uint64_t((char) val) << 32;
     EventBuffer* logBuf = getLogBuffer();
-    logBuf->buf[logBuf->events++] =
-            TSAN_WRITE8 | val | loc | (TSAN_LOC_ZERO_MASK & (uint64_t) addr);
-    if (UNLIKELY(logBuf->events >= EventBuffer::MAX_EVENTS)) {
+    logBuf->buf[logBuf->events] =
+            TSAN_WRITE8 | loc | val | (TSAN_LOC_ZERO_MASK & (uint64_t) addr);
+    // FIXME: move "++" into the previous state would be faster for this
+    // experiment, but not for SLOPPY_BUF_PTR; for now, I am using post-inc
+    // for the sake of uniformity.
+    if (UNLIKELY(logBuf->events++ >= EventBuffer::MAX_EVENTS)) {
         logBuf->events = 0;
     }
 }
@@ -340,52 +331,28 @@ run_log_src_loc(int64_t* array, int length)
     }
 }
 
-/**
- * Log a timestamp event. Extracted from __tsan_write8_log_timestamp_inl
- * so it doesn't have to be inlined.
- */
-void
-__tsan_rdtsc()
-{
-    EventBuffer* logBuf = getLogBuffer();
-    logBuf->buf[logBuf->events++] =
-            TSAN_RDTSC | (TSAN_HDR_ZERO_MASK & rdtsc());
-    // TODO: uncomment this
-//    logBuf->eventsToRdtsc = EventBuffer::RDTSC_SAMPLING_RATE;
-    if (UNLIKELY(logBuf->events >= EventBuffer::MAX_EVENTS)) {
-        logBuf->events = 0;
-    }
-}
-
-/**
- * Generate a timestamp every RDTSC_SAMPLING_RATE events.
- */
 __attribute__((always_inline))
-void __tsan_write8_log_timestamp(uint64_t pc, void* addr, uint64_t val)
+void __tsan_write8_log_full(EventBuffer::Ref* ref, uint64_t pc,
+        void* addr, uint64_t val)
 {
-    val = uint64_t((char) val) << 52;
-    uint64_t loc = (pc << 44) >> 12;
-    // FIXME: why is using gcc intrinsic so much slower than a plain load?
-//  EventBuffer* logBuf = __atomic_load_n(&logBuf, __ATOMIC_ACQUIRE);
-    EventBuffer* logBuf = getLogBuffer();
-    logBuf->buf[logBuf->events++] =
-            TSAN_WRITE8 | val | loc | (TSAN_LOC_ZERO_MASK & (uint64_t)addr);
-    // TODO: uncomment this
-//    logBuf->eventsToRdtsc--;
-//    if (UNLIKELY(logBuf->eventsToRdtsc == 0)) {
-//        // Rip out the cumbersome slow path into a separate function so that we
-//        // don't have to inline them everywhere.
-//        __tsan_rdtsc();
-//    }
+    uint64_t loc = (pc << 44) >> 4;
+    val = uint64_t((char) val) << 32;
+    ref->buf[ref->events] =
+            TSAN_WRITE8 | loc | val | (TSAN_LOC_ZERO_MASK & (uint64_t) addr);
+    if (UNLIKELY(ref->events++ >= ref->checkAliveTime)) {
+        __tsan_write8_volatile_bufptr_opt_slow(ref);
+    }
 }
 
 __attribute__((noinline, target("no-sse")))
 void
-run_log_timestamp(int64_t* array, int length)
+run_log_full(int64_t* array, int length)
 {
+    EventBuffer::Ref bufRef = getLogBuffer()->getRef();
+
     for (int i = 0; i < length; i++) {
         int64_t* addr = &array[i];
-        __tsan_write8_log_timestamp(__LINE__, addr, i);
+        __tsan_write8_log_full(&bufRef, __LINE__, addr, i);
         (*addr) = i;
     }
 }
@@ -424,15 +391,18 @@ run(LogOp logOp, int64_t* array, int length)
         case SLOPPY_BUF_PTR:
             run_volatile_buffer_ptr_opt(array, length);
             break;
-//        case LOG_HEADER:
-//            run_log_header(array, length);
-//            break;
-//        case LOG_VALUE:
-//            run_log_value(array, length);
-//            break;
-//        case LOG_SRC_LOC:
-//            run_log_src_loc(array, length);
-//            break;
+        case LOG_HEADER:
+            run_log_header(array, length);
+            break;
+        case LOG_VALUE:
+            run_log_value(array, length);
+            break;
+        case LOG_SRC_LOC:
+            run_log_src_loc(array, length);
+            break;
+        case LOG_FULL:
+            run_log_full(array, length);
+            break;
 //        case LOG_TIMESTAMP:
 //            run_log_timestamp(array, length);
 //            break;

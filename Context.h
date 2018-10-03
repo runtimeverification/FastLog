@@ -30,6 +30,7 @@ struct Context {
     ~Context()
     {
         printf("context destroyed\n");
+        // TODO: return my event buffer to buffer manager
     }
 
     int i;
