@@ -1,6 +1,7 @@
 #include <cassert>
 #include <thread>
 
+#include "BufferManager.h"
 #include "Context.h"
 #include "LoggerConsts.h"
 #include "Utils.h"
@@ -41,11 +42,13 @@ enum LogOp {
     /// SLOPPY_BUF_PTR.
     LOG_FULL,
 
+    /// Based on LOG_FULL, each thread contacts the buffer manager to get a new
+    /// buffer when its current buffer is full (i.e. advancing to the next
+    /// epoch).
+    BUFFER_MANAGER,
+
     /// Generate RDTSC events periodically.
     LOG_TIMESTAMP,
-
-    /// Switch the buffer to log when epoch changes.
-    LOG_EPOCH,
 };
 
 std::string
@@ -62,6 +65,7 @@ opcodeToString(LogOp op)
     case LOG_VALUE:             return "LOG_VALUE";
     case LOG_SRC_LOC:           return "LOG_SRC_LOC";
     case LOG_FULL:              return "LOG_FULL";
+    case BUFFER_MANAGER:        return "BUFFER_MANAGER";
     case LOG_TIMESTAMP:         return "LOG_TIMESTAMP";
     default:
         char s[50] = {};
@@ -111,7 +115,7 @@ run_func(int64_t* array, int length)
 __attribute__((always_inline))
 void __tsan_write8_log_addr(uint64_t pc, void* addr, uint64_t val)
 {
-    EventBuffer* logBuf = getLogBuffer();
+    EventBuffer* logBuf = getLogBufferUnsafe();
     logBuf->buf[logBuf->events] = (uint64_t) addr;
     if (UNLIKELY(logBuf->events++ == EventBuffer::MAX_EVENTS)) {
         logBuf->events = 0;
@@ -125,7 +129,7 @@ void __tsan_write8_log_addr(uint64_t pc, void* addr, uint64_t val)
 __attribute__((always_inline))
 void __tsan_write8_log_addr2(uint64_t pc, void* addr, uint64_t val)
 {
-    EventBuffer* logBuf = getLogBuffer();
+    EventBuffer* logBuf = getLogBufferUnsafe();
     (*logBuf->next) = (uint64_t) addr;
     if (UNLIKELY(logBuf->next++ == logBuf->end)) {
         logBuf->next = logBuf->buf;
@@ -164,8 +168,8 @@ __attribute__((noinline, target("no-sse")))
 void
 run_log_addr_direct(int64_t* array, int length)
 {
-    int events = getLogBuffer()->events;
-    uint64_t* const buf = getLogBuffer()->buf;
+    int events = getLogBufferUnsafe()->events;
+    uint64_t* const buf = getLogBufferUnsafe()->buf;
 
     for (int i = 0; i < length; i++) {
         int64_t* addr = &array[i];
@@ -173,7 +177,7 @@ run_log_addr_direct(int64_t* array, int length)
         (*addr) = i;
     }
 
-    getLogBuffer()->events = events;
+    getLogBufferUnsafe()->events = events;
 }
 
 /**
@@ -184,7 +188,7 @@ run_log_addr_direct(int64_t* array, int length)
 __attribute__((always_inline))
 void __tsan_write8_volatile_bufptr(uint64_t pc, void* addr, uint64_t val)
 {
-    EventBuffer* logBuf = getLogBufferAtomic();
+    EventBuffer* logBuf = getLogBuffer();
     logBuf->buf[logBuf->events] = (uint64_t) addr;
     if (UNLIKELY(logBuf->events++ == EventBuffer::MAX_EVENTS)) {
         logBuf->events = 0;
@@ -214,13 +218,12 @@ __tsan_write8_volatile_bufptr_opt_slow(EventBuffer::Ref* ref)
     if (UNLIKELY(ref->events >= EventBuffer::MAX_EVENTS)) {
         // Note: the real implementation will not wrap around; instead, it will
         // contact the buffer manager to advance the epoch.
-        EventBuffer::totalEvents += ref->events;
         ref->events = 0;
         ref->checkAliveTime = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
     }
 
     // Reload the latest event buffer pointer.
-    ref->checkUpdate(getLogBufferAtomic());
+    ref->checkUpdate(getLogBuffer());
 }
 
 __attribute__((always_inline))
@@ -238,7 +241,7 @@ __attribute__((noinline, target("no-sse")))
 void
 run_volatile_buffer_ptr_opt(int64_t* array, int length)
 {
-    EventBuffer::Ref bufRef = getLogBuffer()->getRef();
+    EventBuffer::Ref bufRef = getLogBufferRef();
 
     for (int i = 0; i < length; i++) {
         int64_t* addr = &array[i];
@@ -255,7 +258,7 @@ void __tsan_write8_log_header(uint64_t pc, void* addr, uint64_t val)
 {
     // Note: assigning the header as a byte by overwriting the highest byte
     // seems to be much slower than bit manipulation.
-    EventBuffer* logBuf = getLogBuffer();
+    EventBuffer* logBuf = getLogBufferUnsafe();
     logBuf->buf[logBuf->events] =
             TSAN_WRITE8 | (TSAN_HDR_ZERO_MASK & (uint64_t) addr);
     if (UNLIKELY(logBuf->events++ == EventBuffer::MAX_EVENTS)) {
@@ -281,7 +284,7 @@ __attribute__((always_inline))
 void __tsan_write8_log_value(uint64_t pc, void* addr, uint64_t val)
 {
     val = uint64_t((char) val) << 52;
-    EventBuffer* logBuf = getLogBuffer();
+    EventBuffer* logBuf = getLogBufferUnsafe();
     logBuf->buf[logBuf->events] =
             TSAN_WRITE8 | val | (TSAN_VAL_ZERO_MASK & (uint64_t)addr);
     if (UNLIKELY(logBuf->events++ >= EventBuffer::MAX_EVENTS)) {
@@ -309,7 +312,7 @@ void __tsan_write8_log_src_loc(uint64_t pc, void* addr, uint64_t val)
 {
     uint64_t loc = (pc << 44) >> 4;
     val = uint64_t((char) val) << 32;
-    EventBuffer* logBuf = getLogBuffer();
+    EventBuffer* logBuf = getLogBufferUnsafe();
     logBuf->buf[logBuf->events] =
             TSAN_WRITE8 | loc | val | (TSAN_LOC_ZERO_MASK & (uint64_t) addr);
     // FIXME: move "++" into the previous state would be faster for this
@@ -348,11 +351,54 @@ __attribute__((noinline, target("no-sse")))
 void
 run_log_full(int64_t* array, int length)
 {
-    EventBuffer::Ref bufRef = getLogBuffer()->getRef();
+    EventBuffer::Ref bufRef = getLogBufferRef();
 
     for (int i = 0; i < length; i++) {
         int64_t* addr = &array[i];
         __tsan_write8_log_full(&bufRef, __LINE__, addr, i);
+        (*addr) = i;
+    }
+}
+
+// __attribute__((noinline))
+void
+__tsan_write8_buf_manager_slow(EventBuffer::Ref* ref)
+{
+    // Most likely, the event buffer pointer has not changed. Update alive time
+    // and check if the buffer is full anyway.
+    ref->checkAliveTime += EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
+    if (UNLIKELY(ref->events >= EventBuffer::MAX_EVENTS)) {
+        if (__buf_manager.tryIncEpoch(ref)) {
+            return;
+        }
+    }
+
+    // Reload the latest event buffer pointer.
+    ref->checkUpdate(getLogBuffer());
+}
+
+__attribute__((always_inline))
+void __tsan_write8_buf_manager(EventBuffer::Ref* ref, uint64_t pc,
+        void* addr, uint64_t val)
+{
+    uint64_t loc = (pc << 44) >> 4;
+    val = uint64_t((char) val) << 32;
+    ref->buf[ref->events] =
+            TSAN_WRITE8 | loc | val | (TSAN_LOC_ZERO_MASK & (uint64_t) addr);
+    if (UNLIKELY(ref->events++ >= ref->checkAliveTime)) {
+        __tsan_write8_buf_manager_slow(ref);
+    }
+}
+
+__attribute__((noinline, target("no-sse")))
+void
+run_buf_manager(int64_t* array, int length)
+{
+    EventBuffer::Ref bufRef = getLogBufferRef();
+
+    for (int i = 0; i < length; i++) {
+        int64_t* addr = &array[i];
+        __tsan_write8_buf_manager(&bufRef, __LINE__, addr, i);
         (*addr) = i;
     }
 }
@@ -406,9 +452,9 @@ run(LogOp logOp, int64_t* array, int length)
 //        case LOG_TIMESTAMP:
 //            run_log_timestamp(array, length);
 //            break;
-//        case LOG_CHANGE_EPOCH:
-//            run_log_change_epoch(array, length);
-//            break;
+        case BUFFER_MANAGER:
+            run_buf_manager(array, length);
+            break;
         default:
             std::printf("Unknown LogOp %d\n", logOp);
             break;
@@ -418,8 +464,9 @@ run(LogOp logOp, int64_t* array, int length)
 void
 workerMain(int tid, LogOp logOp, int64_t* array, int length)
 {
-    // Hack: only log_change_epoch contains code to handle NULL __log_buffer.
-    if (logOp <= LOG_TIMESTAMP) {
+    // Note: without the buffer manager, __log_buffer will always point to the
+    // same EventBuffer allocated here.
+    if (logOp < BUFFER_MANAGER) {
         __log_buffer = new EventBuffer();
     }
 
@@ -434,8 +481,6 @@ workerMain(int tid, LogOp logOp, int64_t* array, int length)
     double numWriteOps = static_cast<double>(length) * numIterations * 1e-6;
     printf("threadId %d, writeOps %.2fM, cyclesPerWrite %.2f\n", tid,
             numWriteOps, totalTime / numWriteOps * 1e-6);
-    EventBuffer::totalEvents += getLogBufferAtomic()->events;
-    std::printf("Logged %ld events\n", EventBuffer::totalEvents);
 }
 
 int main(int argc, char **argv) {

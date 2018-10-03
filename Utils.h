@@ -6,16 +6,19 @@
 #define LIKELY(x)     __builtin_expect(!!(x), 1)
 #define UNLIKELY(x)   __builtin_expect(!!(x), 0)
 
-static void escape(void* p) {
+inline void
+escape(void* p)
+{
     asm volatile("" : : "g"(p) : "memory");
 }
 
-static void clobber() {
+inline void
+clobber()
+{
     asm volatile("" : : : "memory");
 }
 
-__attribute__((always_inline))
-uint64_t
+inline uint64_t
 rdtsc()
 {
     uint32_t lo, hi;

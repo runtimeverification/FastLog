@@ -1,6 +1,7 @@
 #ifndef FASTLOG_EVENTBUFFER_H
 #define FASTLOG_EVENTBUFFER_H
 
+#include <atomic>
 #include <cstdint>
 
 struct EventBuffer {
@@ -16,6 +17,13 @@ struct EventBuffer {
         int events;
         int checkAliveTime;
 
+        explicit Ref(EventBuffer* logBuf)
+            : logBuf(logBuf)
+            , buf(logBuf->buf)
+            , events(logBuf->events)
+            , checkAliveTime(logBuf->checkAliveTime)
+        {}
+
         ~Ref()
         {
             logBuf->events = events;
@@ -29,10 +37,9 @@ struct EventBuffer {
                 return;
             }
 
-            // DEBUG ONLY
-            EventBuffer::totalEvents += events;
             // Write-back #events (and #events only) to the old event buffer.
             logBuf->events = events;
+            logBuf->closed = true;
 
             // Create a "reference" to the new event buffer.
             logBuf = curBuf;
@@ -50,16 +57,17 @@ struct EventBuffer {
 
     Ref
     getRef() {
-       return {this, buf, events, 0};
+       return Ref(this);
     }
 
     void
     reset()
     {
-        tid = -1;
         events = 0;
-//        nextBufPtrReloadTime = BUFFER_PTR_RELOAD_PERIOD;
-//        eventsToRdtsc = RDTSC_SAMPLING_RATE;
+        checkAliveTime = BUFFER_PTR_RELOAD_PERIOD;
+        tid = -1;
+        epoch = -1;
+        closed = false;
     }
 
     // FIXME: looks like the size of the log can affect quite a lot on the performance.
@@ -73,10 +81,6 @@ struct EventBuffer {
 //  static const int MAX_EVENTS = 10000000;
     static const int MAX_EVENTS = 10000;
 
-    /// Generate a timestamp event every X events.
-    static const int RDTSC_SAMPLING_RATE = 128;
-//  static const int RDTSC_SAMPLING_RATE = 32;
-
     /// TODO: choose this number empirically; we want the smallest number that
     /// doesn't affect performance.
     static const int BUFFER_PTR_RELOAD_PERIOD = 64;
@@ -88,18 +92,19 @@ struct EventBuffer {
     /// (Re-)fetch the event buffer pointer using atomic operation when #events
     /// exceeds this number.
     int checkAliveTime;
-//    // # events till we generate the next timestamp.
-//    int eventsToRdtsc;
 
     // Note: not a ring buffer.
-    uint64_t buf[MAX_EVENTS + BUFFER_PTR_RELOAD_PERIOD];
+    uint64_t buf[MAX_EVENTS + BUFFER_PTR_RELOAD_PERIOD + 1];
 
-    /// Thread ID.
+    /// Identifier for the application thread this buffer is assigned to.
     int tid;
 
-    static __thread int64_t totalEvents;
-};
+    /// Epoch number when BufferManager assigned this buffer to the application
+    /// thread.
+    int epoch;
 
-__thread int64_t EventBuffer::totalEvents = 0;
+    /// True if the application thread will not write to this buffer anymore.
+    std::atomic<bool> closed;
+};
 
 #endif //FASTLOG_EVENTBUFFER_H
