@@ -13,11 +13,14 @@ enum LogOp {
     /// Do nothing. This is the baseline.
     NO_OP               = 1,
 
+    /// Do nothing but disable the use of SSE instructions.
+    NO_SSE              = 2,
+
     /// Call an empty log function; do not inline the function.
-    FUNC_CALL           = 2,
+    FUNC_CALL           = 3,
 
     /// Log the address involved in the memory load/store.
-    LOG_ADDR            = 3,
+    LOG_ADDR            = 4,
 
     /// Based on LOG_ADDR, optimize to avoid indirect access to the internal
     /// fields of EventBuffer.
@@ -42,6 +45,10 @@ enum LogOp {
     /// SLOPPY_BUF_PTR.
     LOG_FULL,
 
+    /// A straighforward implementation of LOG_FULL (i.e. no inlining, combine
+    /// LOG_SRC_LOC and VOLATILE_BUF_PTR) for comparison.
+    LOG_FULL_NAIVE,
+
     /// Based on LOG_FULL, each thread contacts the buffer manager to get a new
     /// buffer when its current buffer is full (i.e. advancing to the next
     /// epoch).
@@ -56,6 +63,7 @@ opcodeToString(LogOp op)
 {
     switch (op) {
     case NO_OP:                 return "NO_OP";
+    case NO_SSE:                return "NO_SSE";
     case FUNC_CALL:             return "FUNC_CALL";
     case LOG_ADDR:              return "LOG_ADDR";
     case LOG_DIRECT_LOAD:       return "LOG_DIRECT_LOAD";
@@ -65,6 +73,7 @@ opcodeToString(LogOp op)
     case LOG_VALUE:             return "LOG_VALUE";
     case LOG_SRC_LOC:           return "LOG_SRC_LOC";
     case LOG_FULL:              return "LOG_FULL";
+    case LOG_FULL_NAIVE:        return "LOG_FULL_NAIVE";
     case BUFFER_MANAGER:        return "BUFFER_MANAGER";
     case LOG_TIMESTAMP:         return "LOG_TIMESTAMP";
     default:
@@ -74,9 +83,19 @@ opcodeToString(LogOp op)
     }
 }
 
-__attribute__((noinline, target("no-sse")))
+__attribute__((noinline))
 void
 run_noop(int64_t* array, int length)
+{
+    for (int i = 0; i < length; i++) {
+        int64_t* addr = &array[i];
+        (*addr) = i;
+    }
+}
+
+__attribute__((noinline, target("no-sse")))
+void
+run_no_sse(int64_t* array, int length)
 {
     for (int i = 0; i < length; i++) {
         int64_t* addr = &array[i];
@@ -360,6 +379,30 @@ run_log_full(int64_t* array, int length)
     }
 }
 
+__attribute__((noinline))
+void __tsan_write8_log_full_naive(uint64_t pc, void* addr, uint64_t val)
+{
+    uint64_t loc = (pc << 44) >> 4;
+    val = uint64_t((char) val) << 32;
+    EventBuffer* logBuf = getLogBuffer();
+    logBuf->buf[logBuf->events] =
+            TSAN_WRITE8 | loc | val | (TSAN_LOC_ZERO_MASK & (uint64_t) addr);
+    if (UNLIKELY(logBuf->events++ == EventBuffer::MAX_EVENTS)) {
+        logBuf->events = 0;
+    }
+}
+
+__attribute__((noinline, target("no-sse")))
+void
+run_log_full_naive(int64_t* array, int length)
+{
+    for (int i = 0; i < length; i++) {
+        int64_t* addr = &array[i];
+        __tsan_write8_log_full_naive(__LINE__, addr, i);
+        (*addr) = i;
+    }
+}
+
 // __attribute__((noinline))
 void
 __tsan_write8_buf_manager_slow(EventBuffer::Ref* ref)
@@ -422,6 +465,9 @@ run(LogOp logOp, int64_t* array, int length)
         case NO_OP:
             run_noop(array, length);
             break;
+        case NO_SSE:
+            run_no_sse(array, length);
+            break;
         case FUNC_CALL:
             run_func(array, length);
             break;
@@ -448,6 +494,9 @@ run(LogOp logOp, int64_t* array, int length)
             break;
         case LOG_FULL:
             run_log_full(array, length);
+            break;
+        case LOG_FULL_NAIVE:
+            run_log_full_naive(array, length);
             break;
 //        case LOG_TIMESTAMP:
 //            run_log_timestamp(array, length);

@@ -1,6 +1,8 @@
 #!/bin/bash
-echo "#include <cstdint>" > main.cpp
-echo "#include <cstdio>" >> main.cpp
-echo "#include <thread>" >> main.cpp
+echo > main.cpp
+for header in atomic cstdint cstdio mutex thread vector unordered_set
+do
+	echo "#include <$header>" >> main.cpp
+done
 g++ -E -nostdinc Main.cc 2>/dev/null | grep -v '^# ' >> main.cpp
 clang-format -i main.cpp
