@@ -1,6 +1,6 @@
 #!/bin/bash
 echo > main.cpp
-for header in atomic cstdint cstdio mutex thread vector unordered_set
+for header in atomic cassert cstdint cstdio mutex thread vector unordered_set
 do
 	echo "#include <$header>" >> main.cpp
 done

@@ -1,20 +1,54 @@
+#include <cassert>
+#include <thread>
 #include "BufferManager.h"
 #include "Context.h"
+#include "Worker.h"
+
+#define LOCK(x) std::lock_guard<std::mutex> _(x)
+#define DEBUG printf
 
 /**
- * Called by application threads, as soon as they detected an epoch change,
- * to get a new event buffer for the latest epoch.
+ * Invoked by application threads, as soon as they detected an epoch change,
+ * to get a new event buffer for the current epoch. Once this function returns,
+ * subsequent calls to getLogBuffer() will return the new event buffer.
+ *
+ * By calling this function, an application thread notifies the logging runtime
+ * that it will participate in the current epoch (so its event buffer must be
+ * reclaimed at the end of the epoch).
+ *
+ * \pre
+ *      The caller's thread-local event buffer pointer must be NULL before
+ *      invoking this function (i.e., getLogBuffer() will return NULL).
+ * \return
+ *      An empty event buffer ready to use.
  */
-void
+EventBuffer*
 BufferManager::allocBuffer()
 {
-    std::lock_guard<std::mutex> _(epochMutex);
+    LOCK(monitor);
+    assert(__atomic_load_n(&__log_buffer, __ATOMIC_RELAXED) == NULL);
+
+    // Obtain an empty event buffer. Attempt to reuse old ones if possible.
+    EventBuffer* buf;
+    if (freeBufs.empty()) {
+        buf = new EventBuffer();
+    } else {
+        buf = freeBufs.back();
+        freeBufs.pop_back();
+        buf->reset();
+    }
+    buf->threadId = __thr_context.threadId;
+    buf->epoch = epoch;
+
+    // TODO: I am not entirely satisfied with all these updates. Easy to forget.
+    // TODO: improve doc; update our records.
+    __atomic_store_n(&__log_buffer, buf, __ATOMIC_RELAXED);
+    __thr_context.logBuffer = buf;
+    allocatedBufs.push_back(buf);
     tlsBufAddrs.insert(&__log_buffer);
-    __atomic_store_n(&__log_buffer, getFreshBuf(), __ATOMIC_RELEASE);
+    return buf;
 }
 
-// TODO: voluntarily release is only useful upon thread_exit? And by worker
-// threads to return event buffers?
 /**
  * Invoked by RV-Predict worker threads to return event buffers they have
  * finished processing.
@@ -25,45 +59,57 @@ BufferManager::allocBuffer()
 void
 BufferManager::release(std::vector<EventBuffer*>* bufsToRelease)
 {
-    std::lock_guard<std::mutex> _(epochMutex);
+    LOCK(monitor);
+    activeWorkers--;
     for (auto buf : *bufsToRelease) {
         freeBufs.push_back(buf);
     }
 }
 
+/**
+ * Invoked by application threads, as soon as their event buffers become full,
+ * to increment the epoch number. When there are multiple threads trying to
+ * increment the epoch number, only one will succeed.
+ *
+ * The one thread that succeeds is named the coordinator thread, which is
+ * responsible for collecting the buffers of the previous epoch and passing
+ * them to a worker thread for analysis.
+ *
+ * \param ref
+ *      Event buffer reference of the calling thread.
+ * \return
+ *      True if this thread successfully increments the epoch number.
+ */
 bool
 BufferManager::tryIncEpoch(EventBuffer::Ref* ref)
 {
-    int oldEpoch = ref->logBuf->epoch;
-    if (!epoch.compare_exchange_strong(oldEpoch, oldEpoch + 1)) {
+    LOCK(monitor);
+    if (epoch != ref->logBuf->epoch) {
         return false;
     }
 
-    // We are the coordinator thread of `oldEpoch`. Start the final
-    // synchronization stage of `oldEpoch`.
-    std::lock_guard<std::mutex> _(epochMutex);
-
-    // Reclaim all event buffers allocated in `oldEpoch`.
+    // We are the coordinator thread. Reclaim all event buffers allocated in
+    // this epoch by setting the "thread-local" event buffer pointers of all
+    // participating threads (including ourselves) to NULL.
     for (auto tlsAddr : tlsBufAddrs) {
-        reclaimedBufs.push_back(__atomic_load_n(tlsAddr, __ATOMIC_RELAXED));
-        if (tlsAddr == &__log_buffer) {
-            ref->checkUpdate(getFreshBuf());
-        } else {
-            __atomic_store_n(tlsAddr, NULL, __ATOMIC_RELAXED);
-        }
+        __atomic_store_n(tlsAddr, NULL, __ATOMIC_RELAXED);
     }
     tlsBufAddrs.clear();
 
-    // FIXME: the following needs to happen in the worker thread; don't delay
-    // this application thread.
-    for (auto buf : reclaimedBufs) {
-        while (!buf->closed) {}
+    // Fire-and-forget a worker thread.
+    if (activeWorkers < MAX_WORKERS) {
+        std::thread worker(workerMain, this, allocatedBufs);
+        worker.detach();
+        activeWorkers++;
+    } else {
+        DEBUG("Too many active workers. Skip processing epoch %d\n", epoch);
+        freeBufs.insert(freeBufs.end(), allocatedBufs.begin(),
+                allocatedBufs.end());
     }
-//    release(reclaimedBufs);
-    for (auto buf : reclaimedBufs) {
-        freeBufs.push_back(buf);
-    }
-    reclaimedBufs.clear();
+    allocatedBufs.clear();
+
+    // Start of the new epoch.
+    epoch++;
     return true;
 }
 
@@ -74,28 +120,31 @@ BufferManager::tryIncEpoch(EventBuffer::Ref* ref)
 void
 BufferManager::threadExit()
 {
-    std::lock_guard<std::mutex> _(epochMutex);
-    EventBuffer* buf = __atomic_load_n(&__log_buffer, __ATOMIC_RELAXED);
-    if (buf != NULL) {
-        if (buf->epoch == epoch) {
-            reclaimedBufs.push_back(buf);
-        } else {
-            freeBufs.push_back(buf);
-        }
-        tlsBufAddrs.erase(&__log_buffer);
+    LOCK(monitor);
+    DEBUG("thread %d exits\n", __thr_context.threadId);
+    if (__thr_context.logBuffer) {
+        __thr_context.logBuffer->closed = true;
     }
-    printf("thread exit\n");
+    tlsBufAddrs.erase(&__log_buffer);
 }
 
+// FIXME: eliminate this function? there is only one user now...
 /**
- * Helper method to retrieve a fresh event buffer. Attempt to reuse old This method is thread-unsafe.
- * Synchronization must be done by the caller.
+ * Helper method to obtain an empty event buffer. Dynamically allocate new
+ * buffers when we run out of free ones.
  *
+ * Note: this function is *NOT* thread-safe; caller must acquire the monitor
+ * lock.
+ *
+ * \param epoch
+ *      Epoch this buffer belongs to.
+ * \param threadId
+ *      Owner thread of the buffer.
  * \return
- *      A fresh event buffer ready to use.
+ *      An empty event buffer ready to use.
  */
 EventBuffer*
-BufferManager::getFreshBuf()
+BufferManager::getFreshBuf(int epoch, int threadId)
 {
     EventBuffer* buf;
     if (freeBufs.empty()) {
@@ -105,7 +154,7 @@ BufferManager::getFreshBuf()
         freeBufs.pop_back();
         buf->reset();
     }
-    buf->tid = __thr_context.tid;
-    buf->epoch = epoch.load(std::memory_order_relaxed);
+    buf->threadId = threadId;
+    buf->epoch = epoch;
     return buf;
 }

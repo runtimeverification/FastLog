@@ -9,39 +9,54 @@
 #include "EventBuffer.h"
 #include "Utils.h"
 
+/// TODO: doc
 class BufferManager {
   public:
     explicit BufferManager()
-        : epoch(0)
-        , epochMutex()
+        : monitor()
+        , activeWorkers()
+        , epoch(0)
+        , allocatedBufs()
         , freeBufs()
-        , reclaimedBufs()
         , tlsBufAddrs()
     {}
 
-    void allocBuffer();
+    EventBuffer* allocBuffer();
     void release(std::vector<EventBuffer*>* bufsToRelease);
     bool tryIncEpoch(EventBuffer::Ref* ref);
     void threadExit();
 
   private:
-    EventBuffer* getFreshBuf();
+    EventBuffer* getFreshBuf(int epoch, int threadId);
 
-    /// Current epoch number.
-    std::atomic<int> epoch;
+    /// Provides monitor-style synchronization for this class, effectively
+    /// serializing all member function calls.
+    std::mutex monitor;
 
-    // TODO: is std::mutex too slow? use SpinLock instead?
-    std::mutex epochMutex;
+    /// # worker threads currently active.
+    int activeWorkers;
 
-    /// Event buffers that are currently available.
+    /// Definitive truth of our current epoch.
+    int epoch;
+
+    /// Event buffers allocated in the current epoch. Must be passed to a worker
+    /// thread for processing at the end of the epoch. Always empty at the
+    /// beginning of a new epoch.
+    std::vector<EventBuffer*> allocatedBufs;
+
+    /// Pool of event buffers that are currently available.
     std::vector<EventBuffer*> freeBufs;
 
-    /// Event buffers allocated in the previous epoch.
-    std::vector<EventBuffer*> reclaimedBufs;
-
     /// Pointers to the global thread local variable `__log_buffer` of all
-    /// threads that are participating in the current epoch.
+    /// threads that are participating in the current epoch. When a thread
+    /// exits, its TLS address will become invalid and must be removed from
+    /// this set (that's why we need to keep a separate allocatedBufs).
     std::unordered_set<EventBuffer**> tlsBufAddrs;
+
+    // TODO: how to set this? std::thread::hardware_concurrency()? How to
+    // avoid #AppThreads+#Workers > cores? How to dynamically adjust #workers?
+    // How to avoid meaningless thread migrations?
+    static const int MAX_WORKERS = 32;
 };
 
 #endif //FASTLOG_BUFFERMANAGER_H

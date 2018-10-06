@@ -37,15 +37,21 @@ getLogBuffer()
 inline EventBuffer::Ref
 getLogBufferRef()
 {
-    return getLogBuffer()->getRef();
+    EventBuffer* logBuf = getLogBuffer();
+    if (logBuf == NULL) {
+        logBuf = __buf_manager.allocBuffer();
+    }
+    return logBuf->getRef();
 }
 
 // TODO:
 struct Context {
+    // FIXME: the ctor should be called by the interceptor of pthread_create?
     Context()
-        : tid(threadCounter.fetch_add(1))
+        : threadId(threadCounter.fetch_add(1))
+        , logBuffer(NULL)
     {
-        printf("context initialized\n");
+        printf("thread context %d init\n", threadId);
     }
 
     ~Context()
@@ -55,8 +61,13 @@ struct Context {
         // TODO: return my event buffer to buffer manager
     }
 
-    const int tid;
+    /// Unique identifier of the thread this context belongs to.
+    const int threadId;
 
+    /// The most recent event buffer that is assigned to us.
+    EventBuffer* logBuffer;
+
+    /// Used to generate unique thread IDs.
     static std::atomic<int> threadCounter;
 };
 

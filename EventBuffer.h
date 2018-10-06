@@ -2,6 +2,7 @@
 #define FASTLOG_EVENTBUFFER_H
 
 #include <atomic>
+#include <cassert>
 #include <cstdint>
 
 struct EventBuffer {
@@ -30,18 +31,24 @@ struct EventBuffer {
             logBuf->checkAliveTime = checkAliveTime;
         }
 
+        /**
+         * Invoked by application threads to update this reference to point to
+         * their newly assigned event buffers once they realize the old ones
+         * have been reclaimed.
+         *
+         * \param curBuf
+         *      Current event buffer. Must be non-null.
+         */
         void
-        checkUpdate(EventBuffer* curBuf)
+        updateLogBuffer(EventBuffer* curBuf)
         {
-            if (logBuf == curBuf) {
-                return;
-            }
+            assert(curBuf && (curBuf != logBuf));
 
             // Write-back #events (and #events only) to the old event buffer.
             logBuf->events = events;
             logBuf->closed = true;
 
-            // Create a "reference" to the new event buffer.
+            // Attach ourselves to the new event buffer.
             logBuf = curBuf;
             buf = curBuf->buf;
             events = 0;
@@ -65,7 +72,7 @@ struct EventBuffer {
     {
         events = 0;
         checkAliveTime = BUFFER_PTR_RELOAD_PERIOD;
-        tid = -1;
+        threadId = -1;
         epoch = -1;
         closed = false;
     }
@@ -97,7 +104,7 @@ struct EventBuffer {
     uint64_t buf[MAX_EVENTS + BUFFER_PTR_RELOAD_PERIOD + 1];
 
     /// Identifier for the application thread this buffer is assigned to.
-    int tid;
+    int threadId;
 
     /// Epoch number when BufferManager assigned this buffer to the application
     /// thread.

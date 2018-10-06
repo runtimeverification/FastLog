@@ -241,8 +241,11 @@ __tsan_write8_volatile_bufptr_opt_slow(EventBuffer::Ref* ref)
         ref->checkAliveTime = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
     }
 
-    // Reload the latest event buffer pointer.
-    ref->checkUpdate(getLogBuffer());
+    // Get a new event buffer if our current one has been reclaimed.
+    EventBuffer* curBuf = getLogBuffer();
+    if (curBuf == NULL) {
+        ref->updateLogBuffer(__buf_manager.allocBuffer());
+    }
 }
 
 __attribute__((always_inline))
@@ -354,8 +357,8 @@ run_log_src_loc(int64_t* array, int length)
 }
 
 __attribute__((always_inline))
-void __tsan_write8_log_full(EventBuffer::Ref* ref, uint64_t pc,
-        void* addr, uint64_t val)
+void __tsan_write8_log_full(EventBuffer::Ref* ref, uint64_t pc, void* addr,
+        uint64_t val)
 {
     uint64_t loc = (pc << 44) >> 4;
     val = uint64_t((char) val) << 32;
@@ -411,21 +414,28 @@ __tsan_write8_buf_manager_slow(EventBuffer::Ref* ref)
     // and check if the buffer is full anyway.
     ref->checkAliveTime += EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
     if (UNLIKELY(ref->events >= EventBuffer::MAX_EVENTS)) {
-        if (__buf_manager.tryIncEpoch(ref)) {
-            return;
-        }
+        __buf_manager.tryIncEpoch(ref);
+        ref->updateLogBuffer(__buf_manager.allocBuffer());
+        return;
     }
 
-    // Reload the latest event buffer pointer.
-    ref->checkUpdate(getLogBuffer());
+    // Get a new event buffer if our current one has been reclaimed.
+    EventBuffer* curBuf = getLogBuffer();
+    if (curBuf == NULL) {
+        ref->updateLogBuffer(__buf_manager.allocBuffer());
+    }
 }
 
 __attribute__((always_inline))
-void __tsan_write8_buf_manager(EventBuffer::Ref* ref, uint64_t pc,
-        void* addr, uint64_t val)
+void __tsan_write8_buf_manager(EventBuffer::Ref* ref, uint64_t pc, void* addr,
+        uint64_t val)
 {
     uint64_t loc = (pc << 44) >> 4;
     val = uint64_t((char) val) << 32;
+    // FIXME: I think we need to do checkAliveTime first before logging to
+    // ensure cut consistency (Update: doesn't matter; can't achieve cut
+    // consistency anyway without waiting until all threads ack'ed the end of
+    // current epoch)
     ref->buf[ref->events] =
             TSAN_WRITE8 | loc | val | (TSAN_LOC_ZERO_MASK & (uint64_t) addr);
     if (UNLIKELY(ref->events++ >= ref->checkAliveTime)) {
@@ -437,6 +447,7 @@ __attribute__((noinline, target("no-sse")))
 void
 run_buf_manager(int64_t* array, int length)
 {
+    // FIXME: what if __log_buffer is currently NULL?
     EventBuffer::Ref bufRef = getLogBufferRef();
 
     for (int i = 0; i < length; i++) {
@@ -540,7 +551,8 @@ int main(int argc, char **argv) {
     int length = 1000000;
 
     // Operation to perform when logging.
-    LogOp logOp = NO_OP;
+    LogOp logOp = BUFFER_MANAGER;
+//    LogOp logOp = NO_OP;
 
     if (argc == 4) {
         numThreads = atoi(argv[1]);
