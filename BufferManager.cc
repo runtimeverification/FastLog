@@ -127,34 +127,3 @@ BufferManager::threadExit()
     }
     tlsBufAddrs.erase(&__log_buffer);
 }
-
-// FIXME: eliminate this function? there is only one user now...
-/**
- * Helper method to obtain an empty event buffer. Dynamically allocate new
- * buffers when we run out of free ones.
- *
- * Note: this function is *NOT* thread-safe; caller must acquire the monitor
- * lock.
- *
- * \param epoch
- *      Epoch this buffer belongs to.
- * \param threadId
- *      Owner thread of the buffer.
- * \return
- *      An empty event buffer ready to use.
- */
-EventBuffer*
-BufferManager::getFreshBuf(int epoch, int threadId)
-{
-    EventBuffer* buf;
-    if (freeBufs.empty()) {
-        buf = new EventBuffer();
-    } else {
-        buf = freeBufs.back();
-        freeBufs.pop_back();
-        buf->reset();
-    }
-    buf->threadId = threadId;
-    buf->epoch = epoch;
-    return buf;
-}

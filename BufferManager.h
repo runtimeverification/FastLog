@@ -27,8 +27,6 @@ class BufferManager {
     void threadExit();
 
   private:
-    EventBuffer* getFreshBuf(int epoch, int threadId);
-
     /// Provides monitor-style synchronization for this class, effectively
     /// serializing all member function calls.
     std::mutex monitor;

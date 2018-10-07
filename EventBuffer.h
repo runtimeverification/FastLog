@@ -85,12 +85,15 @@ struct EventBuffer {
     // Each buffer can hold up to 10M events. Each event is 8-byte, so each buffer
     // is 80 MB. Suppose we can log events at the rate of ~1ns/event, we need 10ms
     // to fill up the buffer.
-//  static const int MAX_EVENTS = 10000000;
-    static const int MAX_EVENTS = 10000;
+    static const int MAX_EVENTS = 10000000;
+//    static const int MAX_EVENTS = 10000;
 
     /// TODO: choose this number empirically; we want the smallest number that
     /// doesn't affect performance.
     static const int BUFFER_PTR_RELOAD_PERIOD = 64;
+
+    /// # bytes used to record an event.
+    static const int EVENT_SIZE = 8;
 
     // # events stored in the buffer.
     int events;
@@ -100,8 +103,10 @@ struct EventBuffer {
     /// exceeds this number.
     int checkAliveTime;
 
-    // Note: not a ring buffer.
+    /// Buffer storage used to hold events.
     uint64_t buf[MAX_EVENTS + BUFFER_PTR_RELOAD_PERIOD + 1];
+    // TODO: any benefit aligned to 64-byte cache line boundary?
+//    alignas(64) uint64_t buf[MAX_EVENTS + BUFFER_PTR_RELOAD_PERIOD + 1];
 
     /// Identifier for the application thread this buffer is assigned to.
     int threadId;

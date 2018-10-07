@@ -26,6 +26,9 @@ enum LogOp {
     /// fields of EventBuffer.
     LOG_DIRECT_LOAD,
 
+    /// Based on LOG_ADDR, prefetch log entries periodically.
+    PREFETCH_LOG_ENTRY,
+
     /// Based on LOG_ADDR, use atomic load read the event buffer pointer.
     VOLATILE_BUF_PTR,
 
@@ -45,8 +48,8 @@ enum LogOp {
     /// SLOPPY_BUF_PTR.
     LOG_FULL,
 
-    /// A straighforward implementation of LOG_FULL (i.e. no inlining, combine
-    /// LOG_SRC_LOC and VOLATILE_BUF_PTR) for comparison.
+    /// A straightforward implementation of LOG_FULL (i.e. no inlining, combine
+    /// LOG_SRC_LOC and VOLATILE_BUF_PTR, no prefetch) for comparison.
     LOG_FULL_NAIVE,
 
     /// Based on LOG_FULL, each thread contacts the buffer manager to get a new
@@ -67,6 +70,7 @@ opcodeToString(LogOp op)
     case FUNC_CALL:             return "FUNC_CALL";
     case LOG_ADDR:              return "LOG_ADDR";
     case LOG_DIRECT_LOAD:       return "LOG_DIRECT_LOAD";
+    case PREFETCH_LOG_ENTRY:    return "PREFETCH_LOG_ENTRY";
     case VOLATILE_BUF_PTR:      return "VOLATILE_BUF_PTR";
     case SLOPPY_BUF_PTR:        return "SLOPPY_BUF_PTR";
     case LOG_HEADER:            return "LOG_HEADER";
@@ -197,6 +201,59 @@ run_log_addr_direct(int64_t* array, int length)
     }
 
     getLogBufferUnsafe()->events = events;
+}
+
+/**
+ * Based on LOG_ADDR, prefetch log entries into all levels of cache, preparing
+ * for the writes.
+ *
+ * The prefetch is implemented using gcc builtins. Since write-prefetch is only
+ * available as an ISA extension, in order to make sure the builtin is actually
+ * compiled into the PREFETCHW instruction (as opposed to normal read-prefetch),
+ * use compiler option "-march={broadwell, skylake, etc.}" or "-mprfchw".
+ */
+__attribute__((always_inline))
+void __tsan_write8_prefetch_log_entries(uint64_t pc, void* addr, uint64_t val)
+{
+    EventBuffer* logBuf = getLogBufferUnsafe();
+    logBuf->buf[logBuf->events] = (uint64_t) addr;
+    if (UNLIKELY(logBuf->events++ >= logBuf->checkAliveTime)) {
+        if (UNLIKELY(logBuf->events >= EventBuffer::MAX_EVENTS)) {
+            logBuf->checkAliveTime = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
+            logBuf->events = 0;
+        }
+
+        // TODO: honestly, I have no clue if this is the best way to do prefetch.
+        // I observed some speedup compared to LOG_ADDR when buffer size is large,
+        // that's all. I don't even know what performance metrics I should be
+        // looking at to see how these SW prefetch change/improve the behavior/performance.
+
+        // Prefetch log entries that will be written in some future period.
+        // A cache line is usually 64-byte, which can hold 8 events.
+        int eventsPerLine = 64 / EventBuffer::EVENT_SIZE;
+        int prefetchCacheLines =
+                EventBuffer::BUFFER_PTR_RELOAD_PERIOD / eventsPerLine;
+        // FIXME: the optimal prefetch distance should be determined by system
+        // memory latency and cycles per loop iteration (i.e., it has nothing
+        // to do with BATCH_SIZE)
+        int prefetchDist = eventsPerLine * prefetchCacheLines * 2;
+        for (int i = 0; i < prefetchCacheLines; i++) {
+            int entry = logBuf->events + prefetchDist + i * eventsPerLine;
+            __builtin_prefetch(&logBuf->buf[entry], 1, 3);
+        }
+        logBuf->checkAliveTime += EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
+    }
+}
+
+__attribute__((noinline, target("no-sse")))
+void
+run_prefetch_log_entries(int64_t* array, int length)
+{
+    for (int i = 0; i < length; i++) {
+        int64_t* addr = &array[i];
+        __tsan_write8_prefetch_log_entries(__LINE__, addr, i);
+        (*addr) = i;
+    }
 }
 
 /**
@@ -485,6 +542,9 @@ run(LogOp logOp, int64_t* array, int length)
         case LOG_ADDR:
             run_log_addr(array, length);
             break;
+        case PREFETCH_LOG_ENTRY:
+            run_prefetch_log_entries(array, length);
+            break;
         case LOG_DIRECT_LOAD:
             run_log_addr_direct(array, length);
             break;
@@ -559,8 +619,10 @@ int main(int argc, char **argv) {
         length = atoi(argv[2]);
         logOp = static_cast<LogOp>(atoi(argv[3]));
     }
-    printf("numThreads %d, arrayLength %d, %s, bufferSize %d\n", numThreads,
-            length, opcodeToString(logOp).c_str(), EventBuffer::MAX_EVENTS);
+    printf("numThreads %d, arrayLength %d, %s, bufferSize %d, "
+           "checkAlivePeriod %d\n", numThreads, length,
+            opcodeToString(logOp).c_str(), EventBuffer::MAX_EVENTS,
+            EventBuffer::BUFFER_PTR_RELOAD_PERIOD);
 
     int64_t* array = new int64_t[numThreads * length];
     std::thread* workers[numThreads];
