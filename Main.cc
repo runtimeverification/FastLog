@@ -29,11 +29,13 @@ enum LogOp {
     /// Based on LOG_ADDR, prefetch log entries periodically.
     PREFETCH_LOG_ENTRY,
 
-    /// Based on LOG_ADDR, use atomic load read the event buffer pointer.
+    /// Based on LOG_ADDR, use atomic load to read the event buffer pointer.
     VOLATILE_BUF_PTR,
 
-    /// Based on LOG_ADDR, use atomic load read the event buffer pointer.
-    SLOPPY_BUF_PTR,
+    /// Optimize VOLATILE_BUF_PTR; use a locally stored (in register) buffer
+    /// pointer to log events while reading the latest buffer pointer from
+    /// memory (or caches) atomically.
+    CACHED_BUF_PTR,
 
     /// Log the event header.
     LOG_HEADER,
@@ -45,11 +47,11 @@ enum LogOp {
     LOG_SRC_LOC,
 
     /// A relatively full implementation by combining LOG_SRC_LOC and
-    /// SLOPPY_BUF_PTR.
+    /// CACHED_BUF_PTR.
     LOG_FULL,
 
-    /// A straightforward implementation of LOG_FULL (i.e. no inlining, combine
-    /// LOG_SRC_LOC and VOLATILE_BUF_PTR, no prefetch) for comparison.
+    /// A straightforward implementation of LOG_FULL (i.e. no inlining,
+    /// no CACHED_BUF_PTR, no prefetch) for comparison.
     LOG_FULL_NAIVE,
 
     /// Based on LOG_FULL, each thread contacts the buffer manager to get a new
@@ -72,7 +74,7 @@ opcodeToString(LogOp op)
     case LOG_DIRECT_LOAD:       return "LOG_DIRECT_LOAD";
     case PREFETCH_LOG_ENTRY:    return "PREFETCH_LOG_ENTRY";
     case VOLATILE_BUF_PTR:      return "VOLATILE_BUF_PTR";
-    case SLOPPY_BUF_PTR:        return "SLOPPY_BUF_PTR";
+    case CACHED_BUF_PTR:        return "CACHED_BUF_PTR";
     case LOG_HEADER:            return "LOG_HEADER";
     case LOG_VALUE:             return "LOG_VALUE";
     case LOG_SRC_LOC:           return "LOG_SRC_LOC";
@@ -128,11 +130,11 @@ run_func(int64_t* array, int length)
 }
 
 /**
- * Log just the memory access address into a per-thread buffer. Wrap around on
- * overflow.
+ * Log just the memory access address into a small per-thread buffer. Wrap
+ * around on overflow.
  *
  * Note: in this experiment, the event buffer pointer never changes so the
- * compiler will transform the code to  load it once into a temporary local
+ * compiler will transform the code to load it once into a temporary local
  * variable.
  */
 __attribute__((always_inline))
@@ -140,7 +142,7 @@ void __tsan_write8_log_addr(uint64_t pc, void* addr, uint64_t val)
 {
     EventBuffer* logBuf = getLogBufferUnsafe();
     logBuf->buf[logBuf->events] = (uint64_t) addr;
-    if (UNLIKELY(logBuf->events++ == EventBuffer::MAX_EVENTS)) {
+    if (UNLIKELY(logBuf->events++ == EventBuffer::MAX_EVENTS_SMALL)) {
         logBuf->events = 0;
     }
 }
@@ -182,7 +184,7 @@ __attribute__((always_inline))
 void __tsan_write8_log_addr_direct(uint64_t* const buf, int& events,
         uint64_t pc, void* addr, uint64_t val) {
     buf[events] = (uint64_t) addr;
-    if (UNLIKELY(events++ == EventBuffer::MAX_EVENTS)) {
+    if (UNLIKELY(events++ == EventBuffer::MAX_EVENTS_SMALL)) {
         events = 0;
     }
 }
@@ -191,8 +193,8 @@ __attribute__((noinline, target("no-sse")))
 void
 run_log_addr_direct(int64_t* array, int length)
 {
-    int events = getLogBufferUnsafe()->events;
-    uint64_t* const buf = getLogBufferUnsafe()->buf;
+    int events = getLogBuffer()->events;
+    uint64_t* const buf = getLogBuffer()->buf;
 
     for (int i = 0; i < length; i++) {
         int64_t* addr = &array[i];
@@ -200,7 +202,7 @@ run_log_addr_direct(int64_t* array, int length)
         (*addr) = i;
     }
 
-    getLogBufferUnsafe()->events = events;
+    getLogBuffer()->events = events;
 }
 
 /**
@@ -217,10 +219,10 @@ void __tsan_write8_prefetch_log_entries(uint64_t pc, void* addr, uint64_t val)
 {
     EventBuffer* logBuf = getLogBufferUnsafe();
     logBuf->buf[logBuf->events] = (uint64_t) addr;
-    if (UNLIKELY(logBuf->events++ >= logBuf->checkAliveTime)) {
+    if (UNLIKELY(logBuf->events++ >= logBuf->nextRdtscTime)) {
         if (UNLIKELY(logBuf->events >= EventBuffer::MAX_EVENTS)) {
-            logBuf->checkAliveTime = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
             logBuf->events = 0;
+            logBuf->nextRdtscTime = EventBuffer::BATCH_SIZE;
         }
 
         // TODO: honestly, I have no clue if this is the best way to do prefetch.
@@ -231,17 +233,17 @@ void __tsan_write8_prefetch_log_entries(uint64_t pc, void* addr, uint64_t val)
         // Prefetch log entries that will be written in some future period.
         // A cache line is usually 64-byte, which can hold 8 events.
         int eventsPerLine = 64 / EventBuffer::EVENT_SIZE;
-        int prefetchCacheLines =
-                EventBuffer::BUFFER_PTR_RELOAD_PERIOD / eventsPerLine;
+        int prefetchCacheLines = EventBuffer::BATCH_SIZE / eventsPerLine;
         // FIXME: the optimal prefetch distance should be determined by system
         // memory latency and cycles per loop iteration (i.e., it has nothing
         // to do with BATCH_SIZE)
         int prefetchDist = eventsPerLine * prefetchCacheLines * 2;
         for (int i = 0; i < prefetchCacheLines; i++) {
             int entry = logBuf->events + prefetchDist + i * eventsPerLine;
-            __builtin_prefetch(&logBuf->buf[entry], 1, 3);
+            __builtin_prefetch(&logBuf->buf[entry], 1 /* prepare for writes */,
+                    3 /* fetch to all cache levels*/);
         }
-        logBuf->checkAliveTime += EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
+        logBuf->nextRdtscTime += EventBuffer::BATCH_SIZE;
     }
 }
 
@@ -266,7 +268,7 @@ void __tsan_write8_volatile_bufptr(uint64_t pc, void* addr, uint64_t val)
 {
     EventBuffer* logBuf = getLogBuffer();
     logBuf->buf[logBuf->events] = (uint64_t) addr;
-    if (UNLIKELY(logBuf->events++ == EventBuffer::MAX_EVENTS)) {
+    if (UNLIKELY(logBuf->events++ == EventBuffer::MAX_EVENTS_SMALL)) {
         logBuf->events = 0;
     }
 }
@@ -286,45 +288,46 @@ run_volatile_buffer_ptr(int64_t* array, int length)
 // THE RESULTING HOT LOOP IS 12 INSN (AS OPPOSED TO 11)...
 // __attribute__((noinline))
 void
-__tsan_write8_volatile_bufptr_opt_slow(EventBuffer::Ref* ref)
+__tsan_write8_cached_bufptr_slow(EventBuffer::Ref* ref,
+        EventBuffer* curBuf, int maxEvents = EventBuffer::MAX_EVENTS_SMALL)
 {
-    // Most likely, the event buffer pointer has not changed. Update alive time
-    // and check if the buffer is full anyway.
-    ref->checkAliveTime += EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
-    if (UNLIKELY(ref->events >= EventBuffer::MAX_EVENTS)) {
+    // Get a new event buffer if our current one has been reclaimed.
+    if (curBuf == NULL) {
+        ref->updateLogBuffer(__buf_manager.allocBuffer());
+        return;
+    }
+
+    // But, most likely, the event buffer pointer has remained intact.
+    ref->nextRdtscTime += EventBuffer::BATCH_SIZE;
+    if (UNLIKELY(ref->events >= maxEvents)) {
         // Note: the real implementation will not wrap around; instead, it will
         // contact the buffer manager to advance the epoch.
         ref->events = 0;
-        ref->checkAliveTime = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
-    }
-
-    // Get a new event buffer if our current one has been reclaimed.
-    EventBuffer* curBuf = getLogBuffer();
-    if (curBuf == NULL) {
-        ref->updateLogBuffer(__buf_manager.allocBuffer());
+        ref->nextRdtscTime = EventBuffer::BATCH_SIZE;
     }
 }
 
 __attribute__((always_inline))
 void
-__tsan_write8_volatile_bufptr_opt(EventBuffer::Ref* ref, uint64_t pc,
+__tsan_write8_cached_bufptr(EventBuffer::Ref* ref, uint64_t pc,
         void* addr, uint64_t val)
 {
+    EventBuffer* curBuf = getLogBuffer();
     ref->buf[ref->events] = (uint64_t) addr;
-    if (UNLIKELY(ref->events++ >= ref->checkAliveTime)) {
-        __tsan_write8_volatile_bufptr_opt_slow(ref);
+    if (UNLIKELY(curBuf == NULL) || (ref->events++ >= ref->nextRdtscTime)) {
+        __tsan_write8_cached_bufptr_slow(ref, curBuf);
     }
 }
 
 __attribute__((noinline, target("no-sse")))
 void
-run_volatile_buffer_ptr_opt(int64_t* array, int length)
+run_cached_buffer_ptr(int64_t* array, int length)
 {
     EventBuffer::Ref bufRef = getLogBufferRef();
 
     for (int i = 0; i < length; i++) {
         int64_t* addr = &array[i];
-        __tsan_write8_volatile_bufptr_opt(&bufRef, __LINE__, addr, i);
+        __tsan_write8_cached_bufptr(&bufRef, __LINE__, addr, i);
         (*addr) = i;
     }
 }
@@ -340,7 +343,7 @@ void __tsan_write8_log_header(uint64_t pc, void* addr, uint64_t val)
     EventBuffer* logBuf = getLogBufferUnsafe();
     logBuf->buf[logBuf->events] =
             TSAN_WRITE8 | (TSAN_HDR_ZERO_MASK & (uint64_t) addr);
-    if (UNLIKELY(logBuf->events++ == EventBuffer::MAX_EVENTS)) {
+    if (UNLIKELY(logBuf->events++ == EventBuffer::MAX_EVENTS_SMALL)) {
         logBuf->events = 0;
     }
 }
@@ -366,7 +369,7 @@ void __tsan_write8_log_value(uint64_t pc, void* addr, uint64_t val)
     EventBuffer* logBuf = getLogBufferUnsafe();
     logBuf->buf[logBuf->events] =
             TSAN_WRITE8 | val | (TSAN_VAL_ZERO_MASK & (uint64_t)addr);
-    if (UNLIKELY(logBuf->events++ >= EventBuffer::MAX_EVENTS)) {
+    if (UNLIKELY(logBuf->events++ >= EventBuffer::MAX_EVENTS_SMALL)) {
         logBuf->events = 0;
     }
 }
@@ -395,9 +398,9 @@ void __tsan_write8_log_src_loc(uint64_t pc, void* addr, uint64_t val)
     logBuf->buf[logBuf->events] =
             TSAN_WRITE8 | loc | val | (TSAN_LOC_ZERO_MASK & (uint64_t) addr);
     // FIXME: move "++" into the previous state would be faster for this
-    // experiment, but not for SLOPPY_BUF_PTR; for now, I am using post-inc
+    // experiment, but not for CACHED_BUF_PTR; for now, I am using post-inc
     // for the sake of uniformity.
-    if (UNLIKELY(logBuf->events++ >= EventBuffer::MAX_EVENTS)) {
+    if (UNLIKELY(logBuf->events++ >= EventBuffer::MAX_EVENTS_SMALL)) {
         logBuf->events = 0;
     }
 }
@@ -417,12 +420,13 @@ __attribute__((always_inline))
 void __tsan_write8_log_full(EventBuffer::Ref* ref, uint64_t pc, void* addr,
         uint64_t val)
 {
+    EventBuffer* curBuf = getLogBuffer();
     uint64_t loc = (pc << 44) >> 4;
     val = uint64_t((char) val) << 32;
     ref->buf[ref->events] =
             TSAN_WRITE8 | loc | val | (TSAN_LOC_ZERO_MASK & (uint64_t) addr);
-    if (UNLIKELY(ref->events++ >= ref->checkAliveTime)) {
-        __tsan_write8_volatile_bufptr_opt_slow(ref);
+    if (UNLIKELY((curBuf == NULL) || (ref->events++ >= ref->nextRdtscTime))) {
+        __tsan_write8_cached_bufptr_slow(ref, curBuf, EventBuffer::MAX_EVENTS);
     }
 }
 
@@ -465,21 +469,23 @@ run_log_full_naive(int64_t* array, int length)
 
 // __attribute__((noinline))
 void
-__tsan_write8_buf_manager_slow(EventBuffer::Ref* ref)
+__tsan_write8_buf_manager_slow(EventBuffer::Ref* ref, EventBuffer* curBuf)
 {
-    // Most likely, the event buffer pointer has not changed. Update alive time
-    // and check if the buffer is full anyway.
-    ref->checkAliveTime += EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
-    if (UNLIKELY(ref->events >= EventBuffer::MAX_EVENTS)) {
-        __buf_manager.tryIncEpoch(ref);
+    // Get a new event buffer if our current one has been reclaimed.
+    if (curBuf == NULL) {
+        // FIXME: what should we do about the latest event? Retract it from the
+        // old buffer? drop it? log it to the new buffer? Do we need to treat
+        // read/write atomic/non-atomic differently?
         ref->updateLogBuffer(__buf_manager.allocBuffer());
         return;
     }
 
-    // Get a new event buffer if our current one has been reclaimed.
-    EventBuffer* curBuf = getLogBuffer();
-    if (curBuf == NULL) {
+    // But, most likely, the event buffer pointer has remained intact.
+    ref->nextRdtscTime += EventBuffer::BATCH_SIZE;
+    if (UNLIKELY(ref->events >= EventBuffer::MAX_EVENTS)) {
+        __buf_manager.tryIncEpoch(ref);
         ref->updateLogBuffer(__buf_manager.allocBuffer());
+        return;
     }
 }
 
@@ -487,16 +493,19 @@ __attribute__((always_inline))
 void __tsan_write8_buf_manager(EventBuffer::Ref* ref, uint64_t pc, void* addr,
         uint64_t val)
 {
+    EventBuffer* curBuf = getLogBuffer();
     uint64_t loc = (pc << 44) >> 4;
     val = uint64_t((char) val) << 32;
     // FIXME: I think we need to do checkAliveTime first before logging to
     // ensure cut consistency (Update: doesn't matter; can't achieve cut
     // consistency anyway without waiting until all threads ack'ed the end of
     // current epoch)
+    // TODO(Update): with the new timeout barrier + cached buf ptr approach,
+    // we just need to retract the event if curBuf becomes NULL (really?).
     ref->buf[ref->events] =
             TSAN_WRITE8 | loc | val | (TSAN_LOC_ZERO_MASK & (uint64_t) addr);
-    if (UNLIKELY(ref->events++ >= ref->checkAliveTime)) {
-        __tsan_write8_buf_manager_slow(ref);
+    if (UNLIKELY((curBuf == NULL) || (ref->events++ >= ref->nextRdtscTime))) {
+        __tsan_write8_buf_manager_slow(ref, curBuf);
     }
 }
 
@@ -504,7 +513,6 @@ __attribute__((noinline, target("no-sse")))
 void
 run_buf_manager(int64_t* array, int length)
 {
-    // FIXME: what if __log_buffer is currently NULL?
     EventBuffer::Ref bufRef = getLogBufferRef();
 
     for (int i = 0; i < length; i++) {
@@ -551,8 +559,8 @@ run(LogOp logOp, int64_t* array, int length)
         case VOLATILE_BUF_PTR:
             run_volatile_buffer_ptr(array, length);
             break;
-        case SLOPPY_BUF_PTR:
-            run_volatile_buffer_ptr_opt(array, length);
+        case CACHED_BUF_PTR:
+            run_cached_buffer_ptr(array, length);
             break;
         case LOG_HEADER:
             run_log_header(array, length);
@@ -611,8 +619,7 @@ int main(int argc, char **argv) {
     int length = 1000000;
 
     // Operation to perform when logging.
-    LogOp logOp = BUFFER_MANAGER;
-//    LogOp logOp = NO_OP;
+    LogOp logOp = NO_OP;
 
     if (argc == 4) {
         numThreads = atoi(argv[1]);
@@ -620,9 +627,8 @@ int main(int argc, char **argv) {
         logOp = static_cast<LogOp>(atoi(argv[3]));
     }
     printf("numThreads %d, arrayLength %d, %s, bufferSize %d, "
-           "checkAlivePeriod %d\n", numThreads, length,
-            opcodeToString(logOp).c_str(), EventBuffer::MAX_EVENTS,
-            EventBuffer::BUFFER_PTR_RELOAD_PERIOD);
+           "eventBatch %d\n", numThreads, length, opcodeToString(logOp).c_str(),
+            EventBuffer::MAX_EVENTS, EventBuffer::BATCH_SIZE);
 
     int64_t* array = new int64_t[numThreads * length];
     std::thread* workers[numThreads];

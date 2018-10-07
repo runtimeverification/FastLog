@@ -16,19 +16,19 @@ struct EventBuffer {
         EventBuffer* logBuf;
         uint64_t* buf;
         int events;
-        int checkAliveTime;
+        int nextRdtscTime;
 
         explicit Ref(EventBuffer* logBuf)
             : logBuf(logBuf)
             , buf(logBuf->buf)
             , events(logBuf->events)
-            , checkAliveTime(logBuf->checkAliveTime)
+            , nextRdtscTime(logBuf->nextRdtscTime)
         {}
 
         ~Ref()
         {
             logBuf->events = events;
-            logBuf->checkAliveTime = checkAliveTime;
+            logBuf->nextRdtscTime = nextRdtscTime;
         }
 
         /**
@@ -52,7 +52,7 @@ struct EventBuffer {
             logBuf = curBuf;
             buf = curBuf->buf;
             events = 0;
-            checkAliveTime = EventBuffer::BUFFER_PTR_RELOAD_PERIOD;
+            nextRdtscTime = EventBuffer::BATCH_SIZE;
         }
 
     };
@@ -71,7 +71,7 @@ struct EventBuffer {
     reset()
     {
         events = 0;
-        checkAliveTime = BUFFER_PTR_RELOAD_PERIOD;
+        nextRdtscTime = BATCH_SIZE;
         threadId = -1;
         epoch = -1;
         closed = false;
@@ -86,11 +86,15 @@ struct EventBuffer {
     // is 80 MB. Suppose we can log events at the rate of ~1ns/event, we need 10ms
     // to fill up the buffer.
     static const int MAX_EVENTS = 10000000;
-//    static const int MAX_EVENTS = 10000;
+
+    /// # events a small buffer can hold. Chosen to fit the small buffer in the
+    /// L1 data cache (assuming ~32KB) entirely. Intended for benchmark only.
+    static const int MAX_EVENTS_SMALL = 1000;
 
     /// TODO: choose this number empirically; we want the smallest number that
     /// doesn't affect performance.
-    static const int BUFFER_PTR_RELOAD_PERIOD = 64;
+    /// Generate a timestamp after logging this many other events.
+    static const int BATCH_SIZE = 64;
 
     /// # bytes used to record an event.
     static const int EVENT_SIZE = 8;
@@ -98,15 +102,13 @@ struct EventBuffer {
     // # events stored in the buffer.
     int events;
 
-    /// Time to check if this event buffer has been reclaimed
-    /// (Re-)fetch the event buffer pointer using atomic operation when #events
-    /// exceeds this number.
-    int checkAliveTime;
+    /// Time to generate a timestamp for the current batch of events.
+    int nextRdtscTime;
 
     /// Buffer storage used to hold events.
-    uint64_t buf[MAX_EVENTS + BUFFER_PTR_RELOAD_PERIOD + 1];
+    uint64_t buf[MAX_EVENTS + BATCH_SIZE + 1];
     // TODO: any benefit aligned to 64-byte cache line boundary?
-//    alignas(64) uint64_t buf[MAX_EVENTS + BUFFER_PTR_RELOAD_PERIOD + 1];
+//    alignas(64) uint64_t buf[MAX_EVENTS + BATCH_SIZE + 1];
 
     /// Identifier for the application thread this buffer is assigned to.
     int threadId;
