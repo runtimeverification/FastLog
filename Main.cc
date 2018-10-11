@@ -11,16 +11,16 @@ static int numIterations = 1000;
 
 enum LogOp {
     /// Do nothing. This is the baseline.
-    NO_OP               = 1,
+    NO_OP               = 0,
 
     /// Do nothing but disable the use of SSE instructions.
-    NO_SSE              = 2,
+    NO_SSE              = 1,
 
     /// Call an empty log function; do not inline the function.
-    FUNC_CALL           = 3,
+    FUNC_CALL           = 2,
 
     /// Log the address involved in the memory load/store.
-    LOG_ADDR            = 4,
+    LOG_ADDR            = 3,
 
     /// Based on LOG_ADDR, optimize to avoid indirect access to the internal
     /// fields of EventBuffer.
@@ -46,21 +46,42 @@ enum LogOp {
     /// Log the source code location of the memory load/store.
     LOG_SRC_LOC,
 
-    /// A relatively full implementation by combining LOG_SRC_LOC and
-    /// CACHED_BUF_PTR.
+    /// A relatively full implementation by combining LOG_SRC_LOC,
+    /// CACHED_BUF_PTR, and PREFETCH_LOG_ENTRIES.
     LOG_FULL,
 
     /// A straightforward implementation of LOG_FULL (i.e. no inlining,
     /// no CACHED_BUF_PTR, no prefetch) for comparison.
     LOG_FULL_NAIVE,
 
-    /// Based on LOG_FULL, each thread contacts the buffer manager to get a new
-    /// buffer when its current buffer is full (i.e. advancing to the next
-    /// epoch).
+    /// Based on LOG_FULL, integrating with the buffer manager to advance the
+    /// epoch when some thread's buffer becomes full and ensure cut consistency.
+    // TODO: add prefetch!
     BUFFER_MANAGER,
 
     /// Generate RDTSC events periodically.
     LOG_TIMESTAMP,
+
+    INVALID_OP,
+};
+
+/// Size of the event buffer used in each experiment.
+constexpr int BUFFER_SIZE[LogOp::INVALID_OP] = {
+        EventBuffer::MAX_EVENTS_SMALL,  // NO_OP
+        EventBuffer::MAX_EVENTS_SMALL,  // NO_SSE
+        EventBuffer::MAX_EVENTS_SMALL,  // FUNC_CALL
+        EventBuffer::MAX_EVENTS_SMALL,  // LOG_ADDR
+        EventBuffer::MAX_EVENTS_SMALL,  // LOG_DIRECT_LOAD
+        EventBuffer::MAX_EVENTS,        // PREFETCH_LOG_ENTRY
+        EventBuffer::MAX_EVENTS_SMALL,  // VOLATILE_BUF_PTR
+        EventBuffer::MAX_EVENTS_SMALL,  // CACHED_BUF_PTR
+        EventBuffer::MAX_EVENTS_SMALL,  // LOG_HEADER
+        EventBuffer::MAX_EVENTS_SMALL,  // LOG_VALUE
+        EventBuffer::MAX_EVENTS_SMALL,  // LOG_SRC_LOC
+        EventBuffer::MAX_EVENTS,        // LOG_FULL
+        EventBuffer::MAX_EVENTS,        // LOG_FULL_NAIVE
+        EventBuffer::MAX_EVENTS,        // BUFFER_MANAGER
+        EventBuffer::MAX_EVENTS_SMALL,  // LOG_TIMESTAMP
 };
 
 std::string
@@ -142,7 +163,7 @@ void __tsan_write8_log_addr(uint64_t pc, void* addr, uint64_t val)
 {
     EventBuffer* logBuf = getLogBufferUnsafe();
     logBuf->buf[logBuf->events] = (uint64_t) addr;
-    if (UNLIKELY(logBuf->events++ == EventBuffer::MAX_EVENTS_SMALL)) {
+    if (UNLIKELY(logBuf->events++ == BUFFER_SIZE[LOG_ADDR])) {
         logBuf->events = 0;
     }
 }
@@ -184,7 +205,7 @@ __attribute__((always_inline))
 void __tsan_write8_log_addr_direct(uint64_t* const buf, int& events,
         uint64_t pc, void* addr, uint64_t val) {
     buf[events] = (uint64_t) addr;
-    if (UNLIKELY(events++ == EventBuffer::MAX_EVENTS_SMALL)) {
+    if (UNLIKELY(events++ == BUFFER_SIZE[LOG_DIRECT_LOAD])) {
         events = 0;
     }
 }
@@ -205,6 +226,27 @@ run_log_addr_direct(int64_t* array, int length)
     getLogBuffer()->events = events;
 }
 
+void prefetch_log_entries(uint64_t* curPos) {
+    // TODO: honestly, I have no clue if this is the best way to do prefetch.
+    // I observed some speedup compared to LOG_ADDR when buffer size is large,
+    // that's all. I don't even know what performance metrics I should be
+    // looking at to see how these SW prefetch change/improve the behavior/performance.
+
+    // Prefetch log entries that will be written in some future period.
+    // A cache line is usually 64-byte, which can hold 8 events.
+    int eventsPerLine = 64 / EventBuffer::EVENT_SIZE;
+    int prefetchCacheLines = EventBuffer::BATCH_SIZE / eventsPerLine;
+    // FIXME: the optimal prefetch distance should be determined by system
+    // memory latency and cycles per loop iteration (i.e., it has nothing
+    // to do with BATCH_SIZE)
+    int prefetchDist = eventsPerLine * prefetchCacheLines * 2;
+    for (int i = 0; i < prefetchCacheLines; i++) {
+        uint64_t* pos = curPos + prefetchDist + i * eventsPerLine;
+        __builtin_prefetch(pos, 1 /* prepare for writes */,
+                3 /* fetch to all cache levels*/);
+    }
+}
+
 /**
  * Based on LOG_ADDR, prefetch log entries into all levels of cache, preparing
  * for the writes.
@@ -220,29 +262,13 @@ void __tsan_write8_prefetch_log_entries(uint64_t pc, void* addr, uint64_t val)
     EventBuffer* logBuf = getLogBufferUnsafe();
     logBuf->buf[logBuf->events] = (uint64_t) addr;
     if (UNLIKELY(logBuf->events++ >= logBuf->nextRdtscTime)) {
-        if (UNLIKELY(logBuf->events >= EventBuffer::MAX_EVENTS)) {
+        if (UNLIKELY(logBuf->events >= BUFFER_SIZE[PREFETCH_LOG_ENTRY])) {
             logBuf->events = 0;
             logBuf->nextRdtscTime = EventBuffer::BATCH_SIZE;
         }
 
-        // TODO: honestly, I have no clue if this is the best way to do prefetch.
-        // I observed some speedup compared to LOG_ADDR when buffer size is large,
-        // that's all. I don't even know what performance metrics I should be
-        // looking at to see how these SW prefetch change/improve the behavior/performance.
-
-        // Prefetch log entries that will be written in some future period.
-        // A cache line is usually 64-byte, which can hold 8 events.
-        int eventsPerLine = 64 / EventBuffer::EVENT_SIZE;
-        int prefetchCacheLines = EventBuffer::BATCH_SIZE / eventsPerLine;
-        // FIXME: the optimal prefetch distance should be determined by system
-        // memory latency and cycles per loop iteration (i.e., it has nothing
-        // to do with BATCH_SIZE)
-        int prefetchDist = eventsPerLine * prefetchCacheLines * 2;
-        for (int i = 0; i < prefetchCacheLines; i++) {
-            int entry = logBuf->events + prefetchDist + i * eventsPerLine;
-            __builtin_prefetch(&logBuf->buf[entry], 1 /* prepare for writes */,
-                    3 /* fetch to all cache levels*/);
-        }
+        // TODO: shall we move prefetch before if?
+        prefetch_log_entries(&logBuf->buf[logBuf->events]);
         logBuf->nextRdtscTime += EventBuffer::BATCH_SIZE;
     }
 }
@@ -268,7 +294,7 @@ void __tsan_write8_volatile_bufptr(uint64_t pc, void* addr, uint64_t val)
 {
     EventBuffer* logBuf = getLogBuffer();
     logBuf->buf[logBuf->events] = (uint64_t) addr;
-    if (UNLIKELY(logBuf->events++ == EventBuffer::MAX_EVENTS_SMALL)) {
+    if (UNLIKELY(logBuf->events++ == BUFFER_SIZE[VOLATILE_BUF_PTR])) {
         logBuf->events = 0;
     }
 }
@@ -284,22 +310,23 @@ run_volatile_buffer_ptr(int64_t* array, int length)
     }
 }
 
-// FIXME: FIGURE OUT WHY USING NOINLINE WILL SLOW DOWN THE PERFORMANCE SIGNIFICANTLY.
-// THE RESULTING HOT LOOP IS 12 INSN (AS OPPOSED TO 11)...
+// TODO: investigate why forcing noinline on the slow path could lead to
+// significantly worse performance.
 // __attribute__((noinline))
 void
-__tsan_write8_cached_bufptr_slow(EventBuffer::Ref* ref,
-        EventBuffer* curBuf, int maxEvents = EventBuffer::MAX_EVENTS_SMALL)
+__tsan_write8_cached_bufptr_slow(EventBuffer::Ref* ref, EventBuffer* curBuf)
 {
     // Get a new event buffer if our current one has been reclaimed.
     if (curBuf == NULL) {
+        // Note: a real implementation will have to deal with the last event
+        // properly, block at a barrier, etc.
         ref->updateLogBuffer(__buf_manager.allocBuffer());
         return;
     }
 
-    // But, most likely, the event buffer pointer has remained intact.
+    // But, most likely, the event buffer pointer will remain intact.
     ref->nextRdtscTime += EventBuffer::BATCH_SIZE;
-    if (UNLIKELY(ref->events >= maxEvents)) {
+    if (UNLIKELY(ref->events >= BUFFER_SIZE[CACHED_BUF_PTR])) {
         // Note: the real implementation will not wrap around; instead, it will
         // contact the buffer manager to advance the epoch.
         ref->events = 0;
@@ -314,7 +341,7 @@ __tsan_write8_cached_bufptr(EventBuffer::Ref* ref, uint64_t pc,
 {
     EventBuffer* curBuf = getLogBuffer();
     ref->buf[ref->events] = (uint64_t) addr;
-    if (UNLIKELY(curBuf == NULL) || (ref->events++ >= ref->nextRdtscTime)) {
+    if (UNLIKELY((ref->events++ >= ref->nextRdtscTime) || (curBuf == NULL))) {
         __tsan_write8_cached_bufptr_slow(ref, curBuf);
     }
 }
@@ -343,7 +370,7 @@ void __tsan_write8_log_header(uint64_t pc, void* addr, uint64_t val)
     EventBuffer* logBuf = getLogBufferUnsafe();
     logBuf->buf[logBuf->events] =
             TSAN_WRITE8 | (TSAN_HDR_ZERO_MASK & (uint64_t) addr);
-    if (UNLIKELY(logBuf->events++ == EventBuffer::MAX_EVENTS_SMALL)) {
+    if (UNLIKELY(logBuf->events++ == BUFFER_SIZE[LOG_HEADER])) {
         logBuf->events = 0;
     }
 }
@@ -369,7 +396,7 @@ void __tsan_write8_log_value(uint64_t pc, void* addr, uint64_t val)
     EventBuffer* logBuf = getLogBufferUnsafe();
     logBuf->buf[logBuf->events] =
             TSAN_WRITE8 | val | (TSAN_VAL_ZERO_MASK & (uint64_t)addr);
-    if (UNLIKELY(logBuf->events++ >= EventBuffer::MAX_EVENTS_SMALL)) {
+    if (UNLIKELY(logBuf->events++ >= BUFFER_SIZE[LOG_VALUE])) {
         logBuf->events = 0;
     }
 }
@@ -392,15 +419,13 @@ run_log_value(int64_t* array, int length)
 __attribute__((always_inline))
 void __tsan_write8_log_src_loc(uint64_t pc, void* addr, uint64_t val)
 {
+    EventBuffer* logBuf = getLogBufferUnsafe();
     uint64_t loc = (pc << 44) >> 4;
     val = uint64_t((char) val) << 32;
-    EventBuffer* logBuf = getLogBufferUnsafe();
     logBuf->buf[logBuf->events] =
             TSAN_WRITE8 | loc | val | (TSAN_LOC_ZERO_MASK & (uint64_t) addr);
-    // FIXME: move "++" into the previous state would be faster for this
-    // experiment, but not for CACHED_BUF_PTR; for now, I am using post-inc
-    // for the sake of uniformity.
-    if (UNLIKELY(logBuf->events++ >= EventBuffer::MAX_EVENTS_SMALL)) {
+    // Note: somehow pre-increment leads to better code being generated.
+    if (UNLIKELY(++logBuf->events >= BUFFER_SIZE[LOG_SRC_LOC])) {
         logBuf->events = 0;
     }
 }
@@ -416,6 +441,28 @@ run_log_src_loc(int64_t* array, int length)
     }
 }
 
+void
+__tsan_write8_log_full_slow(EventBuffer::Ref* ref, EventBuffer* curBuf)
+{
+    // Get a new event buffer if our current one has been reclaimed.
+    if (curBuf == NULL) {
+        // Note: a real implementation will have to deal with the last event
+        // properly, block at a barrier, etc.
+        ref->updateLogBuffer(__buf_manager.allocBuffer());
+        return;
+    }
+
+    // But, most likely, the event buffer pointer will remain intact.
+    ref->nextRdtscTime += EventBuffer::BATCH_SIZE;
+    prefetch_log_entries(&ref->buf[ref->events]);
+    if (UNLIKELY(ref->events >= BUFFER_SIZE[LOG_FULL])) {
+        // Note: the real implementation will not wrap around; instead, it will
+        // contact the buffer manager to advance the epoch.
+        ref->events = 0;
+        ref->nextRdtscTime = EventBuffer::BATCH_SIZE;
+    }
+}
+
 __attribute__((always_inline))
 void __tsan_write8_log_full(EventBuffer::Ref* ref, uint64_t pc, void* addr,
         uint64_t val)
@@ -425,8 +472,10 @@ void __tsan_write8_log_full(EventBuffer::Ref* ref, uint64_t pc, void* addr,
     val = uint64_t((char) val) << 32;
     ref->buf[ref->events] =
             TSAN_WRITE8 | loc | val | (TSAN_LOC_ZERO_MASK & (uint64_t) addr);
-    if (UNLIKELY((curBuf == NULL) || (ref->events++ >= ref->nextRdtscTime))) {
-        __tsan_write8_cached_bufptr_slow(ref, curBuf, EventBuffer::MAX_EVENTS);
+    // Note: two small details that lead to noticeably better performance are
+    // 1) pre-increment and 2) evaluate `curBuf == NULL` later.
+    if (UNLIKELY((++ref->events >= ref->nextRdtscTime) || (curBuf == NULL))) {
+        __tsan_write8_log_full_slow(ref, curBuf);
     }
 }
 
@@ -451,7 +500,7 @@ void __tsan_write8_log_full_naive(uint64_t pc, void* addr, uint64_t val)
     EventBuffer* logBuf = getLogBuffer();
     logBuf->buf[logBuf->events] =
             TSAN_WRITE8 | loc | val | (TSAN_LOC_ZERO_MASK & (uint64_t) addr);
-    if (UNLIKELY(logBuf->events++ == EventBuffer::MAX_EVENTS)) {
+    if (UNLIKELY(logBuf->events++ == BUFFER_SIZE[LOG_FULL_NAIVE])) {
         logBuf->events = 0;
     }
 }
@@ -480,9 +529,10 @@ __tsan_write8_buf_manager_slow(EventBuffer::Ref* ref, EventBuffer* curBuf)
         return;
     }
 
-    // But, most likely, the event buffer pointer has remained intact.
+    // TODO: integrate prefetch!
+    // But, most likely, the event buffer pointer will remain intact.
     ref->nextRdtscTime += EventBuffer::BATCH_SIZE;
-    if (UNLIKELY(ref->events >= EventBuffer::MAX_EVENTS)) {
+    if (UNLIKELY(ref->events >= BUFFER_SIZE[BUFFER_MANAGER])) {
         __buf_manager.tryIncEpoch(ref);
         ref->updateLogBuffer(__buf_manager.allocBuffer());
         return;
@@ -626,9 +676,9 @@ int main(int argc, char **argv) {
         length = atoi(argv[2]);
         logOp = static_cast<LogOp>(atoi(argv[3]));
     }
-    printf("numThreads %d, arrayLength %d, %s, bufferSize %d, "
+    printf("numThreads %d, arrayLength %d, %s, BUFFER_SIZE %d, "
            "eventBatch %d\n", numThreads, length, opcodeToString(logOp).c_str(),
-            EventBuffer::MAX_EVENTS, EventBuffer::BATCH_SIZE);
+            BUFFER_SIZE[logOp], EventBuffer::BATCH_SIZE);
 
     int64_t* array = new int64_t[numThreads * length];
     std::thread* workers[numThreads];
