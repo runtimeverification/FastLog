@@ -99,7 +99,7 @@ struct EventBuffer {
     /// # bytes used to record an event.
     static const int EVENT_SIZE = 8;
 
-    // # events stored in the buffer.
+    /// # events stored in the buffer.
     int events;
 
     /// Time to generate a timestamp for the current batch of events.

@@ -1,0 +1,231 @@
+= Design and Implementation of a Fast Logging System
+:toc:
+:toc-placement!:
+
+toc::[]
+
+# Introduction
+
+This document records the lessons I have learnt in designing, implementing, and benchmarking a fast logging system. The motivation of a fast logging system is based on a simple observation: data race detection using a linear program trace is an embarassingly parallel problem. One can simply divide the program trace into many chunks and run data race analysis on each of the chunk independently. Thus, I believe that, by decoupling logging from the more expensive race detection algorithm, we can engineer RV-Predict so that its overall overhead is essentially the overhead of logging (when given enough compute resources), regardless of the race detection algorithm used in the analysis backend.
+
+# Design Goals
+
+The two most important design goals for the logging system are *high throughput*, measured in the number of events logged per second per core, and *linear scalability* (i.e., per-core throughput unaffected as you increase the number of cores logging). It would also be nice to have a *predictable per-event logging overhead* (i.e., the reciprocal throughput measured in cycles/event) so that 1) the overall slowdown can be estimated easily, and 2) there will be no pathological case that renders the system unusable (e.g., the slowdown of TSan can be >1000x for some programs).
+
+In addition, the logging system must be designed for *simplicity*. Complexity should only be justified by significant performance gains (e.g., >10%) backed by concrete numbers. However, it's OK to sacrifice "absolute correctness" in rare cases as long as the behavior is well-defined and it doesn't cripple the race detector.
+
+# Design Overview
+
+This section describes the overall design of the logging system at a high level. The actual implementation might differ in details for performance reasons.
+
+## Concepts
+
+Some concepts used in the rest of this document include:
+
+* `*Application threads*` - Threads created by the application under test.
+
+* `*Worker threads*` - Threads created by RV-Predict runtime to run data race detection algorithm.
+
+* `*Epoch*` - A period of time in which events logged are put together to check data race by a worker thread.
+
+* `*Event buffer*` - Buffers used to log events; each application thread is assigned an empty event buffer at the beginning of an epoch.
+
+* `*Coordinator*` - At the end of each epoch, an application thread is selected to become the coordinator that supervises the transition into next epoch.
+
+* `*Buffer manager*` - Singleton object that maintains a pool of free event buffers, the ownership of each allocated event buffer, and the current epoch number.
+
+* `*Thread-local trace*` - A stream of events happened in a particular thread.
+
+* `*Global trace*` - A stream of events happened in all threads of a program (obtained by merging multiple thread-local traces)
+
+
+## Algorithm Overview
+
+TODO: (NOT SURE HOW TO INTRODUCE THE WHY's BEFORE WHAT's)The key idea to achieve high-throughput and linear scalability is to avoid coordination between threads as much as possible during logging. To be more specific, we are not allowed to use technique like global atomic counter to order events from different threads.
+
+The easiest way to understand the algorithm is to walk through the things that happened in an epoch.
+
+At the beginning of each epoch, each thread is assigned an empty event buffer. Each application thread can access its own event buffer via a thread-local pointer:
+[source, c++]
+----
+/// Per-thread event buffer pointer. NULL if no event
+/// buffer has been assigned to us.
+thread_local EventBuffer* __log_buffer;
+----
+An event buffer is essentially a fixed-size array where new events are appended to the end:
+[source, c++]
+----
+struct EventBuffer {
+    /// Maximum number of events a buffer can hold.
+    static const int MAX_EVENTS = 10000000;
+
+    /// # events stored in the buffer.
+    int events;
+
+    /// Buffer storage used to hold events.
+    Event buf[MAX_EVENTS];
+
+    /// More member variables omitted...
+};
+----
+
+We chose fixed-size array over, say, ring buffer because a fixed-size array is simpler and likely faster (e.g. can check if buffer is full by comparing against a constant, no need to worry about wrapping around, etc.).
+
+When an event buffer becomes full, the application thread will propose to the buffer manager to start a new epoch (thus obtaining a new event buffer). There can be multiple threads trying to increment the epoch number concurrently but only one can succeed. The application thread that successfully increments the epoch number is selected to become the so-called coordinator, who is responsible for ensuring a smooth transition to the next epoch.
+
+There are two major tasks a coordinator needs to perform during the transition. The first task is to notify other threads about the epoch change. This can be done by writing `NULL` to the event buffer pointers (i.e., `__log_buffer`) of the threads that are participating in the current epoch. And the buffer manager knows exact what these threads are because each application thread has to contact the buffer manager for a new event buffer at the beginning of an epoch.
+
+[NOTE]
+==========================
+Keyword `thread_local` in C++ doesn't restrict a variable to be only accessed from one thread; the variable can be accessed normally in other threads as long as we have its address.
+==========================
+
+When a thread is about to log an event, it has to first check if its current event buffer has been reclaimed (i.e., load the event buffer pointer and see if it's `NULL`) and contact the buffer manager for a new one if necessary:
+[source, c++]
+----
+/// Load the event buffer pointer using atomic operation
+/// (so the compiler knows this variable can be accessed
+/// from other threads).
+EventBuffer* getLogBuffer()
+{
+    return __atomic_load_n(&__log_buffer, __ATOMIC_RELAXED);
+}
+
+// Simplified pseudo-code for logging a new event.
+void logEvent(Event event)
+{
+    EventBuffer* curBuf = getLogBuffer();
+    if (curBuf == NULL) {
+        curBuf = __buffer_manager.allocBuffer();
+    }
+    curBuf->buf[curBuf->events++] = event;
+}
+----
+
+The second task of the coordinator is to reclaim the event buffers used in the old epoch and pass them to a worker thread for processing. However, the coordinator cannot proceed without first synchronizing with other application threads. Otherwise, we cannot prevent the application threads from writing more events into the buffers even though the worker thread has started reading. A simple solution is to introduce a barrier and turn `BufferManager::allocBuffer()` into a blocking function call.
+
+[source, c++]
+----
+/// TODO: add doc
+EventBuffer*
+BufferManager::allocBuffer()
+{
+    // Obtain an empty event buffer (possibly by recycling
+    // one from past epochs).
+    EventBuffer* newBuf = getFreshBuf();
+
+    // Wait until all application threads of the old epoch
+    // have reached here.
+    barrier_wait(&epochBarrier);
+
+    // getLogBuf() will return the new buffer from now.
+    __log_buffer = newBuf;
+    return newBuf;
+}
+----
+
+However, this simple solution runs the risk of deadlock. For instance, imagine a thread that has no event to log and, thus, won't detect the epoch change. At the very least, it's quite inefficient having to block all application threads participating in the old epoch (e.g., what if some thread is sleeping, what if the number of participating threads is much larger than the number of cores, etc.).
+
+One possible fix would be to block the worker thread instead of application threads. That is, inside `BufferManager::allocBuffer()`, instead of entering a barrier, simply mark the old event buffer as "closed", meaning that the worker thread can safely read from it. The worker thread will then wait until all event buffers are closed before processing them.
+
+All's good except that there is actually another important use of barrier: to enforce cut consistency. Consistent cut is a classic problem in distributed system. In our context, it basically states that if a read `R` from thread `T1` observes the value of a write `W` from another thread `T2` then we cannot log `W` in a later epoch than `R`. To understand why a barrier helps enforce cut consistency, consider the following example (without barrier):
+
+==========================
+1. `T1` detects an epoch change when it's about to log `W`
+2. `T1` is assigned a new buffer and logs `W` in the new epoch
+3. `T1` executes `W`
+4. `T2` executes `R` and observes the value written by `W`
+5. `T2` logs `R` in the old epoch
+6. `T2` does some more work and logs more events
+7. `T2` detects an epoch change when it's about to log some new event
+==========================
+
+With a barrier, `T1` will not be able to obtain a new event buffer until `T2` has also detected the epoch change. Therefore, even though `W` is logged to a later epoch, its value is not observed by `R` and no consistency is violated. 
+
+So we are in a dilemma here. On one hand, we need the barrier to enforce cut consistency. On the other hand, we really don't want applications threads to block forever (or for a long time). I don't have a perfect solution yet, unfortunately, but I think using a timeout with the barrier could work fine in practice. To be more precise, the first thread arriving at the barrier will set a cancellation deadline (i.e., `currentTime + timeout`), after which all blocking threads will be released. The timeout value we chose should be small enough so that we don't waste too many CPU cycles. For example, if it takes at least 10 ms to fill up an event buffer, setting the timeout value to 100 us means we will waste at most 1% CPU time.
+
+The use of timeout in the barrier greatly complicates the analysis of cut consistency. In the rest of this section, I will try to reason if cut consistency can be violated due to the broken barrier. Following the notation used earlier, let `W` and `R` be the write-read pair that violates the cut consistency. More precisely, `W` is a write operation in thread `T1` whose logging results in the detection of a new epoch and `R` is a read operation in thread `T2` that observes the value of `W` and logged in the old epoch. Based on whether `T1`/`T2` enters the barrier, we can divide the problem into four possible cases. Thus, our goal is to prove that none of the four cases is actually possible (otherwise, cut consistency can be violated).
+
+*Case 1: both `T1` and `T2` enters the barrier.*
+
+This is impossible. `R` cannot observe the value of `W` because of the barrier (as we have shown earlier).
+
+*Case 2: `T1` enters the barrier but not `T2`.*
+
+
+
+*Case 3: `T2` enters the barrier but not `T1`.*
+
+*Case 4: none of them enters the barrier.*
+
+This is not possible
+==========================
+
+TODO: OK, SO NOW WHAT?
+
+Now, let's add a timeout to the barrier and see what can happen. So can I say the (only) purpose of the barrier is to block the *FIRST* write of a new epoch in some thread from happening too soon (need to wait until other threads have performed & logged their *LAST* reads of the old epoch). So when a barrier is broken due to timeout, what is the consequence? Consider two groups of threads, the first group `G1` entered the barrier before deadline (deadline set by first thread that arrive at the barrier), the second group `G2` arrived at barrier after the deadline. Consistency can be broken by the following combinations:
+
+1. `G1-W` & `G2-R`: the first `R` after the thread gets to run again will (almost certainly) observe the epoch change, so it will be logged to the new epoch (the only exception is that the thread was descheduled right after loading the old event buffer ptr)
+(Obsolete: _`W` has been logged in the new epoch and executed; `R` will (almost) certainly observe the value and the epoch change (several ms have passed); so `R` will (alomost certainly) also be logged to the new epoch_)
+2. `G2-W` & `G2-R`: 
+3. `G2-W` & `G1-R`: no worry, `G1-R` can't observe the value of `G2-W` 
+
+
+TODO: OK, fine, so how do we solve this? Does timeout + shifting the responsiblity of blocking to worker threads really solve the problem? Even in the presense of logEvent being interrupted? Well, if we are shifting the blocking to worker threads, why do we need the barrier anyway?
+
+TODO: In fact, there is another reason why we need to synchronize: to ensure cut consistency.
+
+
+TODO: describe sync. here.
+BufferManager, EventBuffer
+
+Merging thread-local traces
+
+## Correctness
+
+Cut consistency.
+
+Deadlock
+
+Caveat: what if a logging function call is interrupted
+
+
+
+
+
+# Implementation
+
+## Instrumentation
+
+## Event Layout
+
+## Timestamp
+
+## Synchronization (e.g. between application threads, between work threads and application threads)
+
+## Cut Consistency
+
+## Reassembling thread-local traces
+
+# Evaluation and Performance Engineering
+
+The goal of the evaluation is two-fold:
+  * establish a lower bound on the overhead
+  * understanding the sources of overhead
+
+## Experiment Setup
+## Sources of Overhead
+* Worse code generation due to instrumentation (TODO: no need for such details to show in contents?)
+* Function call
+* Reading event buffer pointer
+* Recording information
+* Cache miss
+* Generating timestamps
+
+## Micro-benchmarks
+## ThreadSanitizer Performance
+
+TODO: fastest path overhead; slowest path overhead; how to trigger slowest path
+
+# Random Notes
+## Miscellanous things that can affect performance (c++ standards, gcc vs clang, __thread vs thread_local, post-inc vs. pre-inc, condition test order, etc.)
