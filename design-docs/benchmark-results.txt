@@ -1,0 +1,350 @@
+cset: --> last message, executed args into cpuset "/user", new pid is: 26653
+numThreads 1, arrayLength 10000000, NO_OP, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 2.15
+numThreads 1, arrayLength 10000000, NO_OP, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 2.12
+numThreads 1, arrayLength 10000000, NO_OP, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 2.14
+numThreads 1, arrayLength 10000000, NO_OP, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 2.12
+numThreads 1, arrayLength 10000000, NO_OP, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 2.13
+
+ Performance counter stats for './FastLog 1 10000000 0' (5 runs):
+
+       8221.007539      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.27% )
+                 7      context-switches          #    0.001 K/sec                    ( +-  3.71% )
+                 0      cpu-migrations            #    0.000 K/sec                  
+            78,268      page-faults               #    0.010 M/sec                  
+    21,324,398,976      cycles                    #    2.594 GHz                      ( +-  0.27% )
+    32,657,684,138      instructions              #    1.53  insn per cycle           ( +-  0.00% )
+     2,528,143,793      branches                  #  307.522 M/sec                    ( +-  0.00% )
+            92,338      branch-misses             #    0.00% of all branches          ( +-  0.29% )
+
+       8.221309958 seconds time elapsed                                          ( +-  0.27% )
+
+cset: --> last message, executed args into cpuset "/user", new pid is: 26702
+numThreads 1, arrayLength 10000000, NO_SSE, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 2.29
+numThreads 1, arrayLength 10000000, NO_SSE, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 2.28
+numThreads 1, arrayLength 10000000, NO_SSE, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 2.29
+numThreads 1, arrayLength 10000000, NO_SSE, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 2.30
+numThreads 1, arrayLength 10000000, NO_SSE, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 2.28
+
+ Performance counter stats for './FastLog 1 10000000 1' (5 runs):
+
+       8821.117501      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.19% )
+                 6      context-switches          #    0.001 K/sec                    ( +-  4.37% )
+                 0      cpu-migrations            #    0.000 K/sec                  
+            78,268      page-faults               #    0.009 M/sec                  
+    22,881,032,244      cycles                    #    2.594 GHz                      ( +-  0.19% )
+    40,158,319,762      instructions              #    1.76  insn per cycle           ( +-  0.00% )
+    10,028,253,252      branches                  # 1136.846 M/sec                    ( +-  0.00% )
+            95,640      branch-misses             #    0.00% of all branches          ( +-  0.44% )
+
+       8.821408931 seconds time elapsed                                          ( +-  0.19% )
+
+cset: --> last message, executed args into cpuset "/user", new pid is: 26773
+numThreads 1, arrayLength 10000000, FUNC_CALL, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 5.57
+numThreads 1, arrayLength 10000000, FUNC_CALL, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 5.56
+numThreads 1, arrayLength 10000000, FUNC_CALL, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 5.56
+numThreads 1, arrayLength 10000000, FUNC_CALL, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 5.56
+numThreads 1, arrayLength 10000000, FUNC_CALL, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 5.56
+
+ Performance counter stats for './FastLog 1 10000000 2' (5 runs):
+
+      21441.747365      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.04% )
+                10      context-switches          #    0.000 K/sec                    ( +- 11.36% )
+                 0      cpu-migrations            #    0.000 K/sec                  
+           136,867      page-faults               #    0.006 M/sec                  
+    55,617,655,637      cycles                    #    2.594 GHz                      ( +-  0.04% )
+    80,259,417,283      instructions              #    1.44  insn per cycle           ( +-  0.00% )
+    30,046,770,100      branches                  # 1401.321 M/sec                    ( +-  0.00% )
+           155,062      branch-misses             #    0.00% of all branches          ( +-  1.16% )
+
+      21.442112772 seconds time elapsed                                          ( +-  0.04% )
+
+cset: --> last message, executed args into cpuset "/user", new pid is: 26954
+numThreads 1, arrayLength 10000000, LOG_ADDR, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.01
+numThreads 1, arrayLength 10000000, LOG_ADDR, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.02
+numThreads 1, arrayLength 10000000, LOG_ADDR, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.08
+numThreads 1, arrayLength 10000000, LOG_ADDR, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.02
+numThreads 1, arrayLength 10000000, LOG_ADDR, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.04
+
+ Performance counter stats for './FastLog 1 10000000 3' (5 runs):
+
+      15550.231387      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.32% )
+                 8      context-switches          #    0.001 K/sec                    ( +-  7.48% )
+                 0      cpu-migrations            #    0.000 K/sec                  
+           117,349      page-faults               #    0.008 M/sec                  
+    40,335,656,462      cycles                    #    2.594 GHz                      ( +-  0.32% )
+   110,224,387,550      instructions              #    2.73  insn per cycle           ( +-  0.00% )
+    10,040,532,411      branches                  #  645.684 M/sec                    ( +-  0.00% )
+           132,323      branch-misses             #    0.00% of all branches          ( +-  1.79% )
+
+      15.550572967 seconds time elapsed                                          ( +-  0.32% )
+
+cset: --> last message, executed args into cpuset "/user", new pid is: 27086
+numThreads 1, arrayLength 10000000, LOG_DIRECT_LOAD, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.00
+numThreads 1, arrayLength 10000000, LOG_DIRECT_LOAD, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.02
+numThreads 1, arrayLength 10000000, LOG_DIRECT_LOAD, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.04
+numThreads 1, arrayLength 10000000, LOG_DIRECT_LOAD, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.06
+numThreads 1, arrayLength 10000000, LOG_DIRECT_LOAD, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.08
+
+ Performance counter stats for './FastLog 1 10000000 4' (5 runs):
+
+      15587.765602      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.35% )
+                 9      context-switches          #    0.001 K/sec                    ( +-  9.45% )
+                 0      cpu-migrations            #    0.000 K/sec                  
+           117,349      page-faults               #    0.008 M/sec                  
+    40,433,009,707      cycles                    #    2.594 GHz                      ( +-  0.35% )
+   110,224,356,481      instructions              #    2.73  insn per cycle           ( +-  0.00% )
+    10,040,503,734      branches                  #  644.127 M/sec                    ( +-  0.00% )
+           128,275      branch-misses             #    0.00% of all branches          ( +-  1.62% )
+
+      15.588117141 seconds time elapsed                                          ( +-  0.35% )
+
+cset: --> last message, executed args into cpuset "/user", new pid is: 27218
+numThreads 1, arrayLength 10000000, PREFETCH_LOG_ENTRY, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.78
+numThreads 1, arrayLength 10000000, PREFETCH_LOG_ENTRY, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.79
+numThreads 1, arrayLength 10000000, PREFETCH_LOG_ENTRY, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.80
+numThreads 1, arrayLength 10000000, PREFETCH_LOG_ENTRY, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.76
+numThreads 1, arrayLength 10000000, PREFETCH_LOG_ENTRY, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.80
+
+ Performance counter stats for './FastLog 1 10000000 5' (5 runs):
+
+      18461.327590      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.15% )
+                 8      context-switches          #    0.000 K/sec                    ( +-  2.92% )
+                 0      cpu-migrations            #    0.000 K/sec                  
+           234,529      page-faults               #    0.013 M/sec                  
+    47,886,752,218      cycles                    #    2.594 GHz                      ( +-  0.15% )
+   112,929,897,595      instructions              #    2.36  insn per cycle           ( +-  0.00% )
+    20,389,977,245      branches                  # 1104.470 M/sec                    ( +-  0.00% )
+           483,686      branch-misses             #    0.00% of all branches          ( +-  1.10% )
+
+      18.461673637 seconds time elapsed                                          ( +-  0.15% )
+
+cset: --> last message, executed args into cpuset "/user", new pid is: 27372
+numThreads 1, arrayLength 10000000, VOLATILE_BUF_PTR, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 8.28
+numThreads 1, arrayLength 10000000, VOLATILE_BUF_PTR, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 8.27
+numThreads 1, arrayLength 10000000, VOLATILE_BUF_PTR, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 8.27
+numThreads 1, arrayLength 10000000, VOLATILE_BUF_PTR, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 8.28
+numThreads 1, arrayLength 10000000, VOLATILE_BUF_PTR, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 8.28
+
+ Performance counter stats for './FastLog 1 10000000 6' (5 runs):
+
+      31900.762139      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.03% )
+                12      context-switches          #    0.000 K/sec                    ( +-  5.27% )
+                 0      cpu-migrations            #    0.000 K/sec                  
+           156,422      page-faults               #    0.005 M/sec                  
+    82,747,260,841      cycles                    #    2.594 GHz                      ( +-  0.03% )
+   130,309,903,528      instructions              #    1.57  insn per cycle           ( +-  0.00% )
+    20,054,114,262      branches                  #  628.641 M/sec                    ( +-  0.00% )
+        10,168,651      branch-misses             #    0.05% of all branches          ( +-  0.01% )
+
+      31.901179396 seconds time elapsed                                          ( +-  0.03% )
+
+cset: --> last message, executed args into cpuset "/user", new pid is: 27631
+numThreads 1, arrayLength 10000000, CACHED_BUF_PTR, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.11
+numThreads 1, arrayLength 10000000, CACHED_BUF_PTR, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.14
+numThreads 1, arrayLength 10000000, CACHED_BUF_PTR, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.09
+numThreads 1, arrayLength 10000000, CACHED_BUF_PTR, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.14
+numThreads 1, arrayLength 10000000, CACHED_BUF_PTR, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.16
+
+ Performance counter stats for './FastLog 1 10000000 7' (5 runs):
+
+      15927.840497      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.30% )
+                 8      context-switches          #    0.001 K/sec                    ( +-  7.11% )
+                 0      cpu-migrations            #    0.000 K/sec                  
+           117,355      page-faults               #    0.007 M/sec                  
+    41,315,125,014      cycles                    #    2.594 GHz                      ( +-  0.30% )
+   140,722,394,164      instructions              #    3.41  insn per cycle           ( +-  0.00% )
+    30,206,469,509      branches                  # 1896.457 M/sec                    ( +-  0.00% )
+        10,052,626      branch-misses             #    0.03% of all branches          ( +-  0.01% )
+
+      15.928184688 seconds time elapsed                                          ( +-  0.30% )
+
+cset: --> last message, executed args into cpuset "/user", new pid is: 27770
+numThreads 1, arrayLength 10000000, LOG_HEADER, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.10
+numThreads 1, arrayLength 10000000, LOG_HEADER, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.12
+numThreads 1, arrayLength 10000000, LOG_HEADER, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.09
+numThreads 1, arrayLength 10000000, LOG_HEADER, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.10
+numThreads 1, arrayLength 10000000, LOG_HEADER, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.08
+
+ Performance counter stats for './FastLog 1 10000000 8' (5 runs):
+
+      15801.506237      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.18% )
+                 7      context-switches          #    0.000 K/sec                    ( +-  6.80% )
+                 0      cpu-migrations            #    0.000 K/sec                  
+           117,349      page-faults               #    0.007 M/sec                  
+    40,987,441,956      cycles                    #    2.594 GHz                      ( +-  0.18% )
+   130,224,562,723      instructions              #    3.18  insn per cycle           ( +-  0.00% )
+    10,040,557,458      branches                  #  635.418 M/sec                    ( +-  0.00% )
+           132,228      branch-misses             #    0.00% of all branches          ( +-  1.18% )
+
+      15.801837372 seconds time elapsed                                          ( +-  0.18% )
+
+cset: --> last message, executed args into cpuset "/user", new pid is: 27901
+numThreads 1, arrayLength 10000000, LOG_VALUE, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.95
+numThreads 1, arrayLength 10000000, LOG_VALUE, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 5.00
+numThreads 1, arrayLength 10000000, LOG_VALUE, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.98
+numThreads 1, arrayLength 10000000, LOG_VALUE, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 5.00
+numThreads 1, arrayLength 10000000, LOG_VALUE, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 5.02
+
+ Performance counter stats for './FastLog 1 10000000 9' (5 runs):
+
+      19247.151600      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.23% )
+                 9      context-switches          #    0.000 K/sec                    ( +-  7.03% )
+                 0      cpu-migrations            #    0.000 K/sec                  
+           132,978      page-faults               #    0.007 M/sec                    ( +-  2.94% )
+    49,925,089,587      cycles                    #    2.594 GHz                      ( +-  0.23% )
+   170,251,688,298      instructions              #    3.41  insn per cycle           ( +-  0.00% )
+    10,045,546,328      branches                  #  521.924 M/sec                    ( +-  0.01% )
+           145,585      branch-misses             #    0.00% of all branches          ( +-  1.51% )
+
+      19.247513384 seconds time elapsed                                          ( +-  0.23% )
+
+cset: --> last message, executed args into cpuset "/user", new pid is: 28070
+numThreads 1, arrayLength 10000000, LOG_SRC_LOC, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.38
+numThreads 1, arrayLength 10000000, LOG_SRC_LOC, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.42
+numThreads 1, arrayLength 10000000, LOG_SRC_LOC, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.37
+numThreads 1, arrayLength 10000000, LOG_SRC_LOC, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.43
+numThreads 1, arrayLength 10000000, LOG_SRC_LOC, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 4.46
+
+ Performance counter stats for './FastLog 1 10000000 10' (5 runs):
+
+      17013.752770      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.39% )
+                 8      context-switches          #    0.000 K/sec                    ( +-  2.92% )
+                 0      cpu-migrations            #    0.000 K/sec                  
+           117,349      page-faults               #    0.007 M/sec                  
+    44,131,881,249      cycles                    #    2.594 GHz                      ( +-  0.39% )
+   150,225,942,168      instructions              #    3.40  insn per cycle           ( +-  0.00% )
+    10,040,818,283      branches                  #  590.159 M/sec                    ( +-  0.00% )
+           138,936      branch-misses             #    0.00% of all branches          ( +-  1.53% )
+
+      17.014096816 seconds time elapsed                                          ( +-  0.39% )
+
+cset: --> last message, executed args into cpuset "/user", new pid is: 28210
+numThreads 1, arrayLength 10000000, LOG_FULL, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 5.87
+numThreads 1, arrayLength 10000000, LOG_FULL, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 5.88
+numThreads 1, arrayLength 10000000, LOG_FULL, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 5.88
+numThreads 1, arrayLength 10000000, LOG_FULL, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 5.86
+numThreads 1, arrayLength 10000000, LOG_FULL, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 5.89
+
+ Performance counter stats for './FastLog 1 10000000 11' (5 runs):
+
+      22658.456974      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.07% )
+                 9      context-switches          #    0.000 K/sec                    ( +-  2.27% )
+                 0      cpu-migrations            #    0.000 K/sec                  
+           273,594      page-faults               #    0.012 M/sec                  
+    58,773,683,413      cycles                    #    2.594 GHz                      ( +-  0.07% )
+   202,212,253,535      instructions              #    3.44  insn per cycle           ( +-  0.00% )
+    30,245,611,343      branches                  # 1334.849 M/sec                    ( +-  0.00% )
+           540,781      branch-misses             #    0.00% of all branches          ( +-  1.42% )
+
+      22.658812353 seconds time elapsed                                          ( +-  0.07% )
+
+cset: --> last message, executed args into cpuset "/user", new pid is: 28398
+numThreads 1, arrayLength 10000000, LOG_FULL_NAIVE, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 9.50
+numThreads 1, arrayLength 10000000, LOG_FULL_NAIVE, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 9.44
+numThreads 1, arrayLength 10000000, LOG_FULL_NAIVE, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 9.49
+numThreads 1, arrayLength 10000000, LOG_FULL_NAIVE, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 9.46
+numThreads 1, arrayLength 10000000, LOG_FULL_NAIVE, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 9.45
+
+ Performance counter stats for './FastLog 1 10000000 12' (5 runs):
+
+      36512.987276      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.13% )
+                15      context-switches          #    0.000 K/sec                    ( +-  8.55% )
+                 0      cpu-migrations            #    0.000 K/sec                  
+           351,726      page-faults               #    0.010 M/sec                  
+    94,710,907,785      cycles                    #    2.594 GHz                      ( +-  0.13% )
+   250,621,722,179      instructions              #    2.65  insn per cycle           ( +-  0.00% )
+    30,112,357,821      branches                  #  824.703 M/sec                    ( +-  0.00% )
+           515,624      branch-misses             #    0.00% of all branches          ( +-  1.98% )
+
+      36.513430762 seconds time elapsed                                          ( +-  0.13% )
+
+
+cset: --> last message, executed args into cpuset "/user", new pid is: 29006
+numThreads 1, arrayLength 10000000
+threadId 0, writeOps 10000.00M, cyclesPerWrite 20.02
+numThreads 1, arrayLength 10000000
+threadId 0, writeOps 10000.00M, cyclesPerWrite 20.05
+numThreads 1, arrayLength 10000000
+threadId 0, writeOps 10000.00M, cyclesPerWrite 20.01
+numThreads 1, arrayLength 10000000
+threadId 0, writeOps 10000.00M, cyclesPerWrite 20.14
+numThreads 1, arrayLength 10000000
+threadId 0, writeOps 10000.00M, cyclesPerWrite 20.13
+
+ Performance counter stats for './a.out 1 10000000' (5 runs):
+
+      77400.658347      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.13% )
+               801      context-switches          #    0.010 K/sec                    ( +-  0.23% )
+                 0      cpu-migrations            #    0.000 K/sec
+           179,556      page-faults               #    0.002 M/sec
+   200,767,286,487      cycles                    #    2.594 GHz                      ( +-  0.13% )
+   741,011,661,768      instructions              #    3.69  insn per cycle           ( +-  0.00% )
+   120,178,326,224      branches                  # 1552.678 M/sec                    ( +-  0.00% )
+           841,860      branch-misses             #    0.00% of all branches          ( +-  1.33% )
+
+      77.397987344 seconds time elapsed                                          ( +-  0.13% )

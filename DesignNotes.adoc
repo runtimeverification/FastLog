@@ -168,7 +168,7 @@ This is impossible. `R` cannot observe the value of `W` because it is executed m
 
 For the same reason as *Case 2*, there is no such `R` that satisfies our definition.
 
-To sum up, by choosing the barrier timeout (i.e., `cross-core communication delay << barrier timeout << min. epoch time`) carefully, we can effectively guarantee cut consistency in practice while sacrificing only a tiny fraction of CPU time.
+To sum up, by choosing the barrier timeout carefully (i.e., `cross-core communication delay << barrier timeout << min. epoch time`), we can effectively guarantee cut consistency in practice while sacrificing only a tiny fraction of CPU time.
 
 ## Merge Thread-Local Traces
 
@@ -181,35 +181,164 @@ To sum up, by choosing the barrier timeout (i.e., `cross-core communication dela
 
 ## Event Layout
 
-## Timestamp
-
 ## Synchronization
 
-Between application threads, between work threads and application threads
+TODO: Between application threads, between work threads and application threads
+Use monitor style locking for buffer manager
 
-## Cut Consistency
+## Timestamp
 
-## Reassembling thread-local traces
+TODO: how to take timestamp properly? `lfence; rdtsc; lfence`? `rdtscp; lfence`? cost?
 
-# Evaluation and Performance Engineering
+# Benchmark
 
-The goal of the evaluation is two-fold:
-  * establish a lower bound on the overhead
-  * understanding the sources of overhead
+So far, we haven't really touched on the topic of performance engineering. One approach to develop a fast logging system would be to come up with a simple prototype first and then try to optimize it. However, for this project, I decided to approach it differently in a performance-oriented fashion: I started with a unrealistically simple logging system for single-threaded programs and tried to extend it for multi-threaded programs. The purpose of this decision is actually three-fold:
+
+* Establish a lower bound on the logging overhead (or, a upper bound on throughput)
+* Understand the different sources of logging overhead
+* Use the stringent performance requirements to narrow the design space from the early stage
+
+To this end, I designed a number of micro-benchmarks which I will walk through in the rest of this section.
 
 ## Experiment Setup
-## Sources of Overhead
-* Worse code generation due to instrumentation (TODO: no need for such details to show in contents?)
-* Function call
-* Reading event buffer pointer
-* Recording information
-* Cache miss
-* Generating timestamps
+
+All experiments in this section are performed on the CloudLab http://docs.cloudlab.us/hardware.html#%28part._cloudlab-clemson%29[c6420] nodes:
+----
+CPU         Two Sixteen-core Intel Xeon Gold 6142 CPUs at 2.6 GHz
+RAM         384GB ECC DDR4-2666 Memory
+OS          Ubuntu 18.04
+Compiler    GCC 7.3.0
+----
+
+CPU features like TurboBoost, hyperthreading, frequency scaling, and deep C-states are all disabled to ensure a stable environment:
+
+[source, bash]
+----
+#!/bin/bash
+
+# Set up a stable environment to run performance benchmarks on cloudlab machines.
+
+# Install useful tools
+sudo apt update
+sudo apt install -y linux-tools-common linux-tools-$(uname -r) cpuset cpufrequtils i7z tuned
+
+# Disable address space randomization.
+# Suggested by https://llvm.org/docs/Benchmarking.html
+echo 0 | sudo tee -a /proc/sys/kernel/randomize_va_space
+
+# Disable dynamic frequency scaling and deep C-states.
+sudo systemctl start tuned
+sudo tuned-adm profile latency-performance
+
+# Disable hyper-threading.
+maxCPU=$(($(lscpu | grep "^CPU(s)" | awk '{print $2}') - 1))
+for n in `seq 0 $maxCPU`
+do
+    cpu=/sys/devices/system/cpu/cpu$n
+    hyperthread=$(cut -d, -f2 $cpu/topology/thread_siblings_list)
+    if [[ "$n" = "$hyperthread" ]]
+    then
+        echo 0 | sudo tee -a $cpu/online
+    fi
+done
+
+# Disable turbo-boost.
+cores=$(cat /proc/cpuinfo | grep processor | awk '{print $3}')
+for core in $cores; do
+    sudo wrmsr -p${core} 0x1a0 0x4000850089
+    state=$(sudo rdmsr -p${core} 0x1a0 -f 38:38)
+    if [[ $state -eq 1 ]]; then
+        echo "core ${core}: disabled"
+    else
+        echo "core ${core}: enabled"
+    fi
+done
+
+# Allow us to collect performance metrics via `perf` without sudo.
+echo -1 | sudo tee -a /proc/sys/kernel/perf_event_paranoid
+----
+
+In addition, a number of cores on the same NUMA node are isolated using `cpuset` and dedicated to running benchmark programs.
+
+ $ sudo cset shield -c 2,4,6,8,10, -k on
+ $ sudo cset shield --exec -- ./startBenchmark [ARGS...]
+
 
 ## Micro-benchmarks
+
+To study the overhead of logging, I take the https://github.com/llvm-mirror/compiler-rt/blob/master/lib/tsan/benchmarks/mini_bench_local.cc[mini_bench_local.cc] example in TSan and manually instrument it with calls to the logging library. Then I implement many variants of the logging function whose bodies range from an empty stub to doing slightly more interesting things like logging the address to a full-fledged implementation. The following table summarizes the result.
+
+.Micro-benchmark Summary
+[options="header"]
+|=======================
+|Variant        |Description                |Cycles^1^|Instructions^2^
+|`NO_OP`        |Baseline|2.13|n/a
+|`NO_SSE`       |Disable the use of SSE instructions|2.28|4
+|`FUNC_CALL`    |Call an empty function (no inlining)|5.56|8
+|`LOG_ADDR`     |Log only memory address|4.03|11
+|`PREFETCH_LOG_ENTRY`|`LOG_ADDR` + increase event buffer size and prefetch log entries|4.78|11
+|`VOLATILE_BUF_PTR` |`LOG_ADDR` + use atomic load to read event buffer pointer|8.27|13
+|`CACHED_BUF_PTR`   |`VOLATILE_BUF_PTR` + cache buffer pointer in register|4.13|14
+|`LOG_HEADER`   |`LOG_ADDR` + log event header|4.09|13
+|`LOG_VALUE`    |`LOG_HEADER` + log R/W values|4.99|17
+|`LOG_SRC_LOC`  |`LOG_VALUE` + log source code location|4.41|15
+|`LOG_FULL`     |`LOG_SRC_LOC` + `PREFETCH_LOG_ENTRY` + `CACHED_BUF_PTR`|5.87|20
+|`LOG_FULL_NAIVE`   |`LOG_FULL` w/o optimizations|9.47|25
+|`BUFFER_MANAGER`   |`LOG_FULL` + integration with buffer manager|TODO|TODO
+|`TSan`   |Instrumented with ThreadSanitizer|20.07|74
+|=======================
+*^1^ Average CPU cycles spent per iteration.*
+
+*^2^ Number of instructions of each iteration in the common case.*
+
+ThreadSanitizer is also included for comparison. Its overhead (i.e., extra cycles compared to `NO_OP`) is about *17.94* cycles/iteration, which is almost *5X* of the overhead of `LOG_FULL`, which is only *3.74* cycles/iteration.
+
+*TODO:* _say more about each variant and include source code + assembly code_
+
+
+## Sources of Overhead
+
+The overhead of logging can arise in unexpected places. It is more than just executing the extra code instrumented. Furthermore, not all instructions instrumented are equal: some are better pipelined than others. In this section, I will walk through the interesting lessons I have learned from analyzing the benchmark results.
+
+*First, instrumentation can render certain compiler optimizations unapplicable.* Consider the following code snippet:
+----
+int64_t array[100000];
+for (int i = 0; i < 100000; i++) {
+    array[i] = i;
+}
+----
+
+Such code can benefit from using SSE instructions. However, this is no longer possible when the code is interleaved with calls to the logging library. Here is another example: suppose we change our definition of `array` to `int[100000]`, now the compiler can merge two `int` writes into one `int64_t` write, reducing the number of store instructions by half. This is also not possible if our instrumentation runs before this optimization pass. In general, we should probably try to run our instrumentation pass after compilation passes that can reduce the number of loads/stores.
+
+*Second, the cost of function call is not negligible.* Experiment `FUNC_CALL` demonstrates that just calling an empty non-inlined function adds *3.28* cycles overhead per iteration! Note that this is actually a real source of overhead for ThreadSanitizer because its runtime function is too heavyweight to be inlined. This should not be a problem for our logging library because our functions are much lighter. We just need to properly implement our functions in header files (with `extern` declarations in source files) and compile our runtime as a static library.
+
+
+*Third, reading the event buffer pointer is expensive!* In `VOLATILE_BUF_PTR`, we use the atomic load to read the event buffer pointer so that compiler cannot hoist it out of the loop into a local variable (register). I was originally surprised to see that reading the event buffer pointer adds *4.24* cycles overhead to `LOG_ADDR` but then realized that it makes a lot of sense.
+[source, c++]
+----
+// Code snippet of VOLATILE_BUF_PTR
+EventBuffer* logBuf = __atomic_load_n(&__log_buffer, __ATOMIC_RELAXED);
+curBuf->buf[curBuf->events++] = newEvent;
+----
+Consider the code example above, the processor has to fetch `curBuf` from L1 cache first before it can fetch `curBuf->{buf, events}` again from L1. There is still some pipelining between the data fetch and other instructions but the latency of L1 cache plus the data dependency probably cause significant stalls in the instruction pipeline. (_TODO: How can we verify this? Maybe Andi Kleen's topLev tool?_)
+
+*Fourth, recording full information is expensive (both in time and space)!* In the current event layout, we are squeezing everything into a 64-bit integer by recording only the last byte of the value and the lower 32 bits of the memory address. If we were to record the full 64-bit value and all 48 bits of virtual address, we would have to use 128-bit integers, effectively doubling the usage of memory bandwidth. On the other hand, if the backend algorithm permits, it would be more efficient to log only the values of atomic operations.
+
+_TODO: understand why LOG_SRC_LOC is faster than LOG_VALUE_
+
+*Fifth, logging could introduce a lot of cache misses!* In `PREFETCH_LOG_ENTRY`, I increased the size of the event buffer to be much larger than the L3 cache to study the influence of logging on cache. Since the memory access pattern of logging is highly predictable, I originally expected the hardware L1 prefetcher to work well enough such that the number of L1 store misses is roughly the same as `LOG_ADDR`. However, for unknown reason, this is not the case. Therefore, I have to use software prefetch to load batches of log entries into L1 early enough. So far, I can only limit the effect of L1 store misses to ~0.75 cycles.
+
+*Sixth, we can't afford to generate timestamp for every single event.* The overhead of `rdtsc` instruction is in the range of 25 to 35 cycles on modern CPUs, which means we probably have to amortize it over 64 or 128 events in a batch.
+
+[NOTE]
+==========================
+During my experiment, I realized that there are many small factors that could affect the quality of the generated code (many of which are totally unexpected to me). Some examples are: C++ standard, GCC vs. Clang, `__thread` vs. `thread_local`, pre-increment vs. post-increment, condition test order, etc. Perhaps the takeaway here is that we should eventually write our logging function in optimized assembly code to avoid performance regression.
+==========================
+
 ## ThreadSanitizer Performance
 
-TODO: fastest path overhead; slowest path overhead; how to trigger slowest path
+It's worth saying a bit more about the performance of TSan. One might conclude from its performance on `mini_bench_local` that its worst slowdown is ~*10X*. This is not true. The TSan function responsible for logging memory accesses, `MemoryAccess` (in `tsan_rtl.cc`), has several heavily optimized fast paths. In our example, all calls to this function returns early after `ContainsSameAccess` returns `true`; they never reach the function that accesses the VC state machine (i.e., `MemoryAccessImpl1`). Therefore, *10x* is only the worst slowdown of the *fastest* code path. So if a program updates shared memory locations a lot, it's going to hit the slow path of TSan frequently and results in much worse slowdown. In fact, we have seen examples where TSan results in over *1000x* slowdown.
 
-# Random Notes
-## Miscellanous things that can affect performance (c++ standards, gcc vs clang, __thread vs thread_local, post-inc vs. pre-inc, condition test order, etc.)
+# Evaluation
+
+*TODO:* Probably have to wait till we have the real implementation
