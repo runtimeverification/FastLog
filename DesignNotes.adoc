@@ -39,11 +39,11 @@ Some concepts used in the rest of this document include:
 * `*Global trace*` - A stream of events happened in all threads of a program (obtained by merging multiple thread-local traces)
 
 
-## Algorithm Overview
+## Logging Overview
 
-TODO: (NOT SURE HOW TO INTRODUCE THE WHY's BEFORE WHAT's)The key idea to achieve high-throughput and linear scalability is to avoid coordination between threads as much as possible during logging. To be more specific, we are not allowed to use technique like global atomic counter to order events from different threads.
+The key to achieve high-throughput and scalable logging is to avoid coordination between threads at all cost in the common case. Specifically, we shall not use techniques like global atomic counter to order events from different threads. Ideally, we would like the per-core throughput of our logging system to be close to a simplistic logging system designed only for single-threaded programs.
 
-The easiest way to understand the algorithm is to walk through the things that happened in an epoch.
+The easiest way to understand the logging algorithm is to walk through the things that happened in an epoch.
 
 At the beginning of each epoch, each thread is assigned an empty event buffer. Each application thread can access its own event buffer via a thread-local pointer:
 [source, c++]
@@ -152,45 +152,27 @@ This is impossible. `R` cannot observe the value of `W` because of the barrier (
 
 *Case 2: `T1` enters the barrier but not `T2`.*
 
+The fact that `T2` reaches barrier after the timeout suggests that the logging of `R` happens much later (e.g., in the order of 100 us) than the epoch change notification sent out by the coordinator. It's almost certainly `T2` will observe the epoch change during logging `R` and, thus, log `R` into the new epoch, which is conflict with our definition of `R`. However, there is a flaw in the above reasoning: logging of `R` doesn't happen atomicly. There is a slight chance that `T2` could load the old event buffer, get descheduled, and finally resume after the barrier timeout, in which case `R` will be logged to the old epoch. Fortunately, in this case, `R` will be executed much earlier than the barrier timeout and won't be able to observe the value of `W`, which is again conflict with our definition of `R`. The following is an illustration of this corner case. Note that "load buffer pointer" could happen after the barrier starts, but not too much later if it wants to observe the old buffer pointer because our barrier timeout is much larger (e.g., 1000x) than the time for cross-core information propogation.
 
+          T2 observes (old) buffer pointer and gets descheduled       T2 resumes
+          |                                                           |
+-------+--+------------+--------------------- ... ----------------+---+----
+       |               |                                          |
+       T2 executse R   barrier starts                             barrier timeout
 
 *Case 3: `T2` enters the barrier but not `T1`.*
 
+This is impossible. `R` cannot observe the value of `W` because it is executed much earlier than `W` (which is only executed after the barrier timeout).
+
 *Case 4: none of them enters the barrier.*
 
-This is not possible
-==========================
+For the same reason as *Case 2*, there is no such `R` that satisfies our definition.
 
-TODO: OK, SO NOW WHAT?
+To sum up, by choosing the barrier timeout (i.e., `cross-core communication delay << barrier timeout << min. epoch time`) carefully, we can effectively guarantee cut consistency in practice while sacrificing only a tiny fraction of CPU time.
 
-Now, let's add a timeout to the barrier and see what can happen. So can I say the (only) purpose of the barrier is to block the *FIRST* write of a new epoch in some thread from happening too soon (need to wait until other threads have performed & logged their *LAST* reads of the old epoch). So when a barrier is broken due to timeout, what is the consequence? Consider two groups of threads, the first group `G1` entered the barrier before deadline (deadline set by first thread that arrive at the barrier), the second group `G2` arrived at barrier after the deadline. Consistency can be broken by the following combinations:
+## Merge Thread-Local Traces
 
-1. `G1-W` & `G2-R`: the first `R` after the thread gets to run again will (almost certainly) observe the epoch change, so it will be logged to the new epoch (the only exception is that the thread was descheduled right after loading the old event buffer ptr)
-(Obsolete: _`W` has been logged in the new epoch and executed; `R` will (almost) certainly observe the value and the epoch change (several ms have passed); so `R` will (alomost certainly) also be logged to the new epoch_)
-2. `G2-W` & `G2-R`: 
-3. `G2-W` & `G1-R`: no worry, `G1-R` can't observe the value of `G2-W` 
-
-
-TODO: OK, fine, so how do we solve this? Does timeout + shifting the responsiblity of blocking to worker threads really solve the problem? Even in the presense of logEvent being interrupted? Well, if we are shifting the blocking to worker threads, why do we need the barrier anyway?
-
-TODO: In fact, there is another reason why we need to synchronize: to ensure cut consistency.
-
-
-TODO: describe sync. here.
-BufferManager, EventBuffer
-
-Merging thread-local traces
-
-## Correctness
-
-Cut consistency.
-
-Deadlock
-
-Caveat: what if a logging function call is interrupted
-
-
-
+*TODO:* _describe how to merge traces using timestamps and R/W values of atomic operations_
 
 
 # Implementation
@@ -201,7 +183,9 @@ Caveat: what if a logging function call is interrupted
 
 ## Timestamp
 
-## Synchronization (e.g. between application threads, between work threads and application threads)
+## Synchronization
+
+Between application threads, between work threads and application threads
 
 ## Cut Consistency
 
