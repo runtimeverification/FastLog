@@ -73,4 +73,7 @@ struct Context {
 
 extern thread_local Context __thr_context;
 
+/// Global atomic counter used to allocate event IDs.
+extern std::atomic<uint32_t> __event_id_counter;
+
 #endif //FASTLOG_CONTEXT_H

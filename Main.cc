@@ -54,6 +54,9 @@ enum LogOp {
     /// no CACHED_BUF_PTR, no prefetch) for comparison.
     LOG_FULL_NAIVE,
 
+    /// Use an atomic global counter to order events.
+    GLOBAL_COUNTER,
+
     /// Based on LOG_FULL, integrating with the buffer manager to advance the
     /// epoch when some thread's buffer becomes full and ensure cut consistency.
     // TODO: add prefetch!
@@ -80,6 +83,7 @@ constexpr int BUFFER_SIZE[LogOp::INVALID_OP] = {
         EventBuffer::MAX_EVENTS_SMALL,  // LOG_SRC_LOC
         EventBuffer::MAX_EVENTS,        // LOG_FULL
         EventBuffer::MAX_EVENTS,        // LOG_FULL_NAIVE
+        EventBuffer::MAX_EVENTS_SMALL,  // GLOBAL_COUNTER
         EventBuffer::MAX_EVENTS,        // BUFFER_MANAGER
         EventBuffer::MAX_EVENTS_SMALL,  // LOG_TIMESTAMP
 };
@@ -101,6 +105,7 @@ opcodeToString(LogOp op)
     case LOG_SRC_LOC:           return "LOG_SRC_LOC";
     case LOG_FULL:              return "LOG_FULL";
     case LOG_FULL_NAIVE:        return "LOG_FULL_NAIVE";
+    case GLOBAL_COUNTER:        return "GLOBAL_COUNTER";
     case BUFFER_MANAGER:        return "BUFFER_MANAGER";
     case LOG_TIMESTAMP:         return "LOG_TIMESTAMP";
     default:
@@ -573,6 +578,35 @@ run_buf_manager(int64_t* array, int length)
 }
 
 /**
+ * Based on LOG_ADDR, use an atomic global counter to assign each event a unique
+ * ID. The ID is monotonically increasing, effectively introducing a total order
+ * among events.
+ */
+__attribute__((always_inline))
+void __tsan_write8_global_counter(uint64_t pc, void* addr, uint64_t val)
+{
+    EventBuffer* logBuf = getLogBufferUnsafe();
+    uint64_t eventId =
+            __event_id_counter.fetch_add(1, std::memory_order_relaxed);
+    logBuf->buf[logBuf->events] =
+            (eventId << 32) | (TSAN_LOC_ZERO_MASK & (uint64_t) addr);
+    if (UNLIKELY(logBuf->events++ == BUFFER_SIZE[GLOBAL_COUNTER])) {
+        logBuf->events = 0;
+    }
+}
+
+__attribute__((noinline, target("no-sse")))
+void
+run_global_counter(int64_t* array, int length)
+{
+    for (int i = 0; i < length; i++) {
+        int64_t* addr = &array[i];
+        __tsan_write8_global_counter(__LINE__, addr, i);
+        (*addr) = i;
+    }
+}
+
+/**
  * Write to an array of 64-bit integers sequentially. Manually instrumented
  * with calls to log the memory store operations.
  *
@@ -627,12 +661,15 @@ run(LogOp logOp, int64_t* array, int length)
         case LOG_FULL_NAIVE:
             run_log_full_naive(array, length);
             break;
-//        case LOG_TIMESTAMP:
-//            run_log_timestamp(array, length);
-//            break;
+        case GLOBAL_COUNTER:
+            run_global_counter(array, length);
+            break;
         case BUFFER_MANAGER:
             run_buf_manager(array, length);
             break;
+//        case LOG_TIMESTAMP:
+//            run_log_timestamp(array, length);
+//            break;
         default:
             std::printf("Unknown LogOp %d\n", logOp);
             break;

@@ -284,12 +284,15 @@ To study the overhead of logging, I take the https://github.com/llvm-mirror/comp
 |`LOG_SRC_LOC`  |`LOG_VALUE` + log source code location|4.41|15
 |`LOG_FULL`     |`LOG_SRC_LOC` + `PREFETCH_LOG_ENTRY` + `CACHED_BUF_PTR`|5.87|20
 |`LOG_FULL_NAIVE`   |`LOG_FULL` w/o optimizations|9.47|25
+|`GLOBAL_COUNTER`   |`LOG_ADDR` + atomic global counter|26.51/122/183/245^3^|17
 |`BUFFER_MANAGER`   |`LOG_FULL` + integration with buffer manager|TODO|TODO
 |`TSan`   |Instrumented with ThreadSanitizer|20.07|74
 |=======================
 *^1^ Average CPU cycles spent per iteration.*
 
 *^2^ Number of instructions of each iteration in the common case.*
+
+*^3^ The four numbers correspond to the cases of one, two, three, and four logging threads, respectively.*
 
 ThreadSanitizer is also included for comparison. Its overhead (i.e., extra cycles compared to `NO_OP`) is about *17.94* cycles/iteration, which is almost *5X* of the overhead of `LOG_FULL`, which is only *3.74* cycles/iteration.
 

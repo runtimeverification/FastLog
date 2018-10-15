@@ -348,3 +348,25 @@ threadId 0, writeOps 10000.00M, cyclesPerWrite 20.13
            841,860      branch-misses             #    0.00% of all branches          ( +-  1.33% )
 
       77.397987344 seconds time elapsed                                          ( +-  0.13% )
+
+yilongl@work:~/FastLog/build$ sudo cset shield --exec -- perf stat -r 3 ./FastLog 1 10000000 13
+cset: --> last message, executed args into cpuset "/user", new pid is: 24151
+numThreads 1, arrayLength 10000000, GLOBAL_COUNTER, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 26.51
+numThreads 1, arrayLength 10000000, GLOBAL_COUNTER, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 26.51
+numThreads 1, arrayLength 10000000, GLOBAL_COUNTER, BUFFER_SIZE 1000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 26.51
+
+ Performance counter stats for './FastLog 1 10000000 13' (3 runs):
+
+     102208.868185      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.01% )
+                31      context-switches          #    0.000 K/sec                    ( +-  4.93% )
+                 0      cpu-migrations            #    0.000 K/sec
+           234,574      page-faults               #    0.002 M/sec
+   265,119,570,226      cycles                    #    2.594 GHz                      ( +-  0.01% )
+   170,503,921,583      instructions              #    0.64  insn per cycle           ( +-  0.00% )
+    20,089,227,074      branches                  #  196.551 M/sec                    ( +-  0.00% )
+        10,457,279      branch-misses             #    0.05% of all branches          ( +-  0.07% )
+
+     102.209089011 seconds time elapsed                                          ( +-  0.01% )
