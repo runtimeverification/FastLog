@@ -333,6 +333,9 @@ _TODO: understand why LOG_SRC_LOC is faster than LOG_VALUE_
 
 *Fifth, logging could introduce a lot of cache misses!* In `PREFETCH_LOG_ENTRY`, I increased the size of the event buffer to be much larger than the L3 cache to study the influence of logging on cache. Since the memory access pattern of logging is highly predictable, I originally expected the hardware L1 prefetcher to work well enough such that the number of L1 store misses is roughly the same as `LOG_ADDR`. However, for unknown reason, this is not the case. Therefore, I have to use software prefetch to load batches of log entries into L1 early enough. So far, I can only limit the effect of L1 store misses to ~0.75 cycles.
 
+TODO: some useful links on SW prefetching: https://lwn.net/Articles/444336/, https://lemire.me/blog/2018/04/30/is-software-prefetching-__builtin_prefetch-useful-for-performance/, http://home.eng.iastate.edu/~zzhang/cpre581/lectures/Lecture17-1p.pdf
+TODO: https://sites.utexas.edu/jdm4372/2018/01/01/notes-on-non-temporal-aka-streaming-stores/, https://lwn.net/Articles/255364/
+
 *Sixth, we can't afford to generate timestamp for every single event.* The overhead of `rdtsc` instruction is in the range of 25 to 35 cycles on modern CPUs, which means we probably have to amortize it over 64 or 128 events in a batch.
 
 [NOTE]
