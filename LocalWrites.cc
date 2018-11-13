@@ -1,4 +1,7 @@
 #include <cassert>
+#include <cstdint>
+#include <cstdlib>
+#include <cstdio>
 #include <thread>
 
 /// # times to (over)write the array.

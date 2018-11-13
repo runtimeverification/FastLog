@@ -287,6 +287,7 @@ To study the overhead of logging, I take the https://github.com/llvm-mirror/comp
 |`GLOBAL_COUNTER`   |`LOG_ADDR` + atomic global counter|26.51/122/183/245^3^|17
 |`BUFFER_MANAGER`   |`LOG_FULL` + integration with buffer manager|TODO|TODO
 |`TSan`   |Instrumented with ThreadSanitizer|20.07|74
+|`ngrt`   |Instrumented with RV-Predict[C]@`ad38cb5`|444.82|1166
 |=======================
 *^1^ Average CPU cycles spent per iteration.*
 

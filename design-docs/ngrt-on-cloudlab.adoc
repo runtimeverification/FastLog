@@ -1,0 +1,85 @@
+Notes on building RV-Predict[C] on CloudLab machines
+
+# Install dependencies
+
+Don't use Ubuntu 18.04; use Ubuntu 16.04 because RVP[C] doesn't work with newer clang and jdk yet. Note that the `tuned` package is not available in 16.04.
+ $ sudo apt update
+ $ sudo apt install -y mk-configure cmake clang maven opam default-jdk
+ 
+# Build RV-Predict[C]
+
+ $ ./setup
+ $ export PATH=$PATH:~/rv-predict/.tools/bin
+
+# Compile & run the LocalWrites example
+
+ $ rvpc++ -O3 LocalWrites.cc -o LocalWrites
+ $ export RVP_TRACE_ONLY=yes; export RVP_TRACE_FILE=/dev/null 
+ $ perf stat -r 5 ./LocalWrites 1 10000000
+
+Somehow my script for setting up benchmark environment doesn't work; I had to use this one to turn off TurboBoost:
+http://notepad2.blogspot.com/2014/11/a-script-to-turn-off-intel-cpu-turbo.html
+
+Also, I have remove `std::thread` to work around the `vptr_update` bug in RVP[C]. The modified benchmark program becomes the following:
+[source, c++]
+----
+#include <cassert>
+#include <cstdint>
+#include <cstdlib>
+#include <cstdio>
+
+/// # times to (over)write the array.
+static int numIterations = 1000;
+
+inline uint64_t
+rdtsc()
+{
+    uint32_t lo, hi;
+    __asm__ __volatile__("rdtsc" : "=a" (lo), "=d" (hi));
+    return (((uint64_t)hi << 32) | lo);
+}
+
+__attribute__((noinline))
+void
+run(int64_t* array, int length)
+{
+    for (int i = 0; i < length; i++) {
+        int64_t* addr = &array[i];
+        (*addr) = i;
+    }
+}
+
+void
+workerMain(int tid, int64_t* array, int length)
+{
+    uint64_t startTime = rdtsc();
+
+    // Repeat the experiment many times.
+    for (int i = 0; i < numIterations; i++) {
+        run(array, length);
+    }
+
+    uint64_t totalTime = rdtsc() - startTime;
+    double numWriteOps = static_cast<double>(length) * numIterations * 1e-6;
+    std::printf("threadId %d, writeOps %.2fM, cyclesPerWrite %.2f\n", tid,
+            numWriteOps, totalTime / numWriteOps * 1e-6);
+}
+
+int main(int argc, char **argv) {
+    // # threads writing.
+    int numThreads = 1;
+
+    // Size of the array for each thread.
+    int length = 1000000;
+
+    if (argc == 3) {
+        numThreads = atoi(argv[1]);
+        length = std::atoi(argv[2]);
+    }
+    std::printf("numThreads %d, arrayLength %d\n", numThreads, length);
+
+    int64_t* array = (int64_t*)std::malloc(sizeof(int64_t) * numThreads * length);
+    workerMain(0, array, length);
+    return 0;
+}
+----
