@@ -50,6 +50,9 @@ enum LogOp {
     /// CACHED_BUF_PTR, and PREFETCH_LOG_ENTRIES.
     LOG_FULL,
 
+    /// Based on LOG_FULL but use 128-bit events instead.
+    LOG_FULL_128,
+
     /// A straightforward implementation of LOG_FULL (i.e. no inlining,
     /// no CACHED_BUF_PTR, no prefetch) for comparison.
     LOG_FULL_NAIVE,
@@ -82,6 +85,7 @@ constexpr int BUFFER_SIZE[LogOp::INVALID_OP] = {
         EventBuffer::MAX_EVENTS_SMALL,  // LOG_VALUE
         EventBuffer::MAX_EVENTS_SMALL,  // LOG_SRC_LOC
         EventBuffer::MAX_EVENTS,        // LOG_FULL
+        EventBuffer::MAX_EVENTS,        // LOG_FULL_128
         EventBuffer::MAX_EVENTS,        // LOG_FULL_NAIVE
         EventBuffer::MAX_EVENTS_SMALL,  // GLOBAL_COUNTER
         EventBuffer::MAX_EVENTS,        // BUFFER_MANAGER
@@ -104,6 +108,7 @@ opcodeToString(LogOp op)
     case LOG_VALUE:             return "LOG_VALUE";
     case LOG_SRC_LOC:           return "LOG_SRC_LOC";
     case LOG_FULL:              return "LOG_FULL";
+    case LOG_FULL_128:          return "LOG_FULL_128";
     case LOG_FULL_NAIVE:        return "LOG_FULL_NAIVE";
     case GLOBAL_COUNTER:        return "GLOBAL_COUNTER";
     case BUFFER_MANAGER:        return "BUFFER_MANAGER";
@@ -468,6 +473,8 @@ __tsan_write8_log_full_slow(EventBuffer::Ref* ref, EventBuffer* curBuf)
     }
 }
 
+// TODO: would it be faster to use uint32_t pc? maybe, but pc is known at
+// compile-time so it probably doesn't matter if the write function is inlined.
 __attribute__((always_inline))
 void __tsan_write8_log_full(EventBuffer::Ref* ref, uint64_t pc, void* addr,
         uint64_t val)
@@ -493,6 +500,37 @@ run_log_full(int64_t* array, int length)
     for (int i = 0; i < length; i++) {
         int64_t* addr = &array[i];
         __tsan_write8_log_full(&bufRef, __LINE__, addr, i);
+        (*addr) = i;
+    }
+}
+
+__attribute__((always_inline))
+void __tsan_write8_log_full_128(EventBuffer::Ref* ref, uint64_t pc, void* addr,
+        uint64_t val)
+{
+    EventBuffer* curBuf = getLogBuffer();
+    uint64_t loc = (pc << 44) >> 4;
+    // Keep only the lower 32 bits of the value. Note that we can record up to
+    // 56 bits of the value if necessary (i.e., excluding 4-bit header, 20-bit
+    // location, and 48-bit address).
+    ref->buf[ref->events++] = TSAN_WRITE8 | loc | ((uint32_t) val);
+    ref->buf[ref->events] = (uint64_t) addr;
+    // Note: two small details that lead to noticeably better performance are
+    // 1) pre-increment and 2) evaluate `curBuf == NULL` later.
+    if (UNLIKELY((++ref->events >= ref->nextRdtscTime) || (curBuf == NULL))) {
+        __tsan_write8_log_full_slow(ref, curBuf);
+    }
+}
+
+__attribute__((noinline, target("no-sse")))
+void
+run_log_full_128(int64_t* array, int length)
+{
+    EventBuffer::Ref bufRef = getLogBufferRef();
+
+    for (int i = 0; i < length; i++) {
+        int64_t* addr = &array[i];
+        __tsan_write8_log_full_128(&bufRef, __LINE__, addr, i);
         (*addr) = i;
     }
 }
@@ -657,6 +695,9 @@ run(LogOp logOp, int64_t* array, int length)
             break;
         case LOG_FULL:
             run_log_full(array, length);
+            break;
+        case LOG_FULL_128:
+            run_log_full_128(array, length);
             break;
         case LOG_FULL_NAIVE:
             run_log_full_naive(array, length);

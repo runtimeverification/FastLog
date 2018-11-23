@@ -371,32 +371,57 @@ threadId 0, writeOps 10000.00M, cyclesPerWrite 26.51
 
      102.209089011 seconds time elapsed                                          ( +-  0.01% )
 
+yilongl@work:~$ rvpc -O3 localwrites.c -o test
+yilongl@work:~$ perf stat -r 5 ./test 10000000
+length = 10000000, ntimes = 1000
+238537525006 cycles, 23.8538 cycles/iteration
+length = 10000000, ntimes = 1000
+240486134578 cycles, 24.0486 cycles/iteration
+length = 10000000, ntimes = 1000
+238238203156 cycles, 23.8238 cycles/iteration
+length = 10000000, ntimes = 1000
+239269675732 cycles, 23.927 cycles/iteration
+length = 10000000, ntimes = 1000
+238938969852 cycles, 23.8939 cycles/iteration
 
+ Performance counter stats for './test 10000000' (5 runs):
 
-yilongl@work:~$ sudo cset shield --exec -- perf stat -r 5 ./test 1 1000000
-cset: --> last message, executed args into cpuset "/user", new pid is: 4457
-numThreads 1, arrayLength 1000000
-threadId 0, writeOps 1000.00M, cyclesPerWrite 442.80
-numThreads 1, arrayLength 1000000
-threadId 0, writeOps 1000.00M, cyclesPerWrite 443.00
-numThreads 1, arrayLength 1000000
-threadId 0, writeOps 1000.00M, cyclesPerWrite 439.50
-numThreads 1, arrayLength 1000000
-threadId 0, writeOps 1000.00M, cyclesPerWrite 448.47
-numThreads 1, arrayLength 1000000
-threadId 0, writeOps 1000.00M, cyclesPerWrite 450.32
-
- Performance counter stats for './test 1 1000000' (5 runs):
-
-     342598.513482      task-clock (msec)         #    1.998 CPUs utilized            ( +-  0.44% )
-            22,838      context-switches          #    0.067 K/sec                    ( +- 11.15% )
-                 3      cpu-migrations            #    0.000 K/sec
-            31,577      page-faults               #    0.092 K/sec                    ( +-  0.01% )
-   888,652,588,707      cycles                    #    2.594 GHz                      ( +-  0.44% )
+      94077.300414      task-clock (msec)         #    1.021 CPUs utilized            ( +-  0.17% )
+           341,591      context-switches          #    0.004 M/sec                    ( +-  0.01% )
+                 4      cpu-migrations            #    0.000 K/sec                    ( +-  5.57% )
+           236,896      page-faults               #    0.003 M/sec
+   243,247,900,224      cycles                    #    2.586 GHz                      ( +-  0.17% )
    <not supported>      stalled-cycles-frontend
    <not supported>      stalled-cycles-backend
- 1,166,483,806,571      instructions              #    1.31  insns per cycle          ( +-  0.13% )
-   186,250,298,477      branches                  #  543.640 M/sec                    ( +-  0.14% )
-       636,335,733      branch-misses             #    0.34% of all branches          ( +-  0.37% )
+   940,900,973,223      instructions              #    3.87  insns per cycle          ( +-  0.00% )
+   164,966,863,668      branches                  # 1753.525 M/sec                    ( +-  0.00% )
+        23,875,087      branch-misses             #    0.01% of all branches          ( +-  0.69% )
 
-     171.487752804 seconds time elapsed                                          ( +-  0.45% )
+      92.180359867 seconds time elapsed                                          ( +-  0.16% )
+
+
+yilongl@work:~/FastLog/build$ sudo cset shield --exec -- perf stat -r 5 ./FastLog 1 10000000 12
+cset: --> last message, executed args into cpuset "/user", new pid is: 26108
+numThreads 1, arrayLength 10000000, LOG_FULL_128, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 6.44
+numThreads 1, arrayLength 10000000, LOG_FULL_128, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 6.42
+numThreads 1, arrayLength 10000000, LOG_FULL_128, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 6.43
+numThreads 1, arrayLength 10000000, LOG_FULL_128, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 6.46
+numThreads 1, arrayLength 10000000, LOG_FULL_128, BUFFER_SIZE 10000000, eventBatch 64
+threadId 0, writeOps 10000.00M, cyclesPerWrite 6.46
+
+ Performance counter stats for './FastLog 1 10000000 12' (5 runs):
+
+      24840.416875      task-clock (msec)         #    1.000 CPUs utilized            ( +-  0.13% )
+                11      context-switches          #    0.000 K/sec                    ( +-  2.31% )
+                 0      cpu-migrations            #    0.000 K/sec
+           273,593      page-faults               #    0.011 M/sec
+    64,433,577,082      cycles                    #    2.594 GHz                      ( +-  0.13% )
+   173,932,896,994      instructions              #    2.70  insn per cycle           ( +-  0.00% )
+    30,402,064,319      branches                  # 1223.895 M/sec                    ( +-  0.00% )
+           325,528      branch-misses             #    0.00% of all branches          ( +-  0.59% )
+
+      24.840730009 seconds time elapsed                                          ( +-  0.13% )

@@ -172,7 +172,7 @@ To sum up, by choosing the barrier timeout carefully (i.e., `cross-core communic
 
 ## Merge Thread-Local Traces
 
-*TODO:* _describe how to merge traces using timestamps and R/W values of atomic operations_
+*TODO:* _describe how to merge traces using timestamps and R/W values of atomic operations and when to take timestamps (e.g., every X events? every atomic ops? every X atomic ops? every lock/unlock events?)_
 
 
 # Implementation
@@ -180,6 +180,21 @@ To sum up, by choosing the barrier timeout carefully (i.e., `cross-core communic
 ## Instrumentation
 
 ## Event Layout
+
+The design of the event layout has direct impact on the logging performance and the network/memory bandwidth required to transfer the traces for analysis. For example, recording events using 128-bit unsigned integers is more expensive than using 64-bit ones and doubles the network/memory bandwidth consumption. Therefore, to achieve the best performance, it's crucial to record the common events, i.e. non-atomic reads and writes, as compact as possible.
+
+For example, we can design the layout of our non-atomic read/write events as follows to fit them into 64-bit integers:
+
+1. The first bit records whether this event is a non-atomic memory access event.
+2. The second bit records whether this event is a read or write.
+3. The third and fourth bits record the size of the memory access: `00`, `01`, `10`, and `11` correspond to 1-byte, 2-byte, 4-byte, and 8-byte, respectively.
+4. The next 20 bits record the source location ID of the program statement that generates this event.
+5. The next 8 bits record the last byte of the read/write value.
+6. The last 32 bits record the lower 32 bits of the read/write memory address.
+
+There is a number of things in the above design that deserve some explanations. First of all, the first bit is what differentiates non-atomic read/write events from other uncommon events (e.g., function call/ret, atomic ops, lock/unlock, etc). This allows us to use only 2 bits to record the header of normal read/write events, while other uncommon events can use as many bits as necessary without sacrificing performance. Suppose we are using a fixed-size header for all events, we would need at least 6 bits to represent more than 32 event types. Second, we choose to allocate 20 bits to the source location ID of the events because this allows us to differentiate more than 1 million source locations, which should be more than enough in practice (e.g., Linux kernel has ~15M lines of code but it is multi-process and only a fraction of lines access the memory). Third, only keeping the last byte of the value might seem risky. However, remember that non-atomic read/write values are only used in the trace merge phase if the coarse-grained timestamp events alone are not enough to pair each atomic read event R against the atomic write event that writes the value R observes. In fact, it's possible that, if we are taking timestamps at smart timings, timestamps alone would be enough to unambiguously complete such pairing; in which case, we don't even need to log the value. Finally, recording only the lower 32 bits of the virtual memory address (which has 48 bits in use in the current x64 architecture) may introduce false read/write dependencies and false data race alarms. The possibility of going wrong seems rather low for most applications because a 32-bit number can address 4GB of memory and most application will likely only access data within some contiguous 4GB range in each epoch. Alternatively, if we keep only the last 4 bits of a read/write value, we can still record 16 different values while extending the recorded address space to 64GB.
+
+While I believe that, for most applications, we can record normal read/write events in 64-bit integers without introducing false alarms, this hypothesis needs to be verified carefully in evaluation. If this decision turns out to be too aggressive, we must have a fallback to record them using 128-bit integers. With 128 bits at our disposal, we can afford to record the entire 48-bit virtual address while still having 56 bits left for recording the read/write value (i.e., 128 - 4 - 20 - 48 = 56). As shown later in the `LOG_FULL_128` micro-benchmark, recording events using 128-bit integers increases the per-event logging overhead by ~0.6 cycles (or ~15% more overhead compared to `LOG_FULL`).
 
 ## Synchronization
 
@@ -271,29 +286,32 @@ To study the overhead of logging, I take the https://github.com/llvm-mirror/comp
 .Micro-benchmark Summary
 [options="header"]
 |=======================
-|Variant        |Description                |Cycles^1^|Instructions^2^
-|`NO_OP`        |Baseline|2.13|n/a
-|`NO_SSE`       |Disable the use of SSE instructions|2.28|4
-|`FUNC_CALL`    |Call an empty function (no inlining)|5.56|8
-|`LOG_ADDR`     |Log only memory address|4.03|11
-|`PREFETCH_LOG_ENTRY`|`LOG_ADDR` + increase event buffer size and prefetch log entries|4.78|11
-|`VOLATILE_BUF_PTR` |`LOG_ADDR` + use atomic load to read event buffer pointer|8.27|13
-|`CACHED_BUF_PTR`   |`VOLATILE_BUF_PTR` + cache buffer pointer in register|4.13|14
-|`LOG_HEADER`   |`LOG_ADDR` + log event header|4.09|13
-|`LOG_VALUE`    |`LOG_HEADER` + log R/W values|4.99|17
-|`LOG_SRC_LOC`  |`LOG_VALUE` + log source code location|4.41|15
-|`LOG_FULL`     |`LOG_SRC_LOC` + `PREFETCH_LOG_ENTRY` + `CACHED_BUF_PTR`|5.87|20
-|`LOG_FULL_NAIVE`   |`LOG_FULL` w/o optimizations|9.47|25
-|`GLOBAL_COUNTER`   |`LOG_ADDR` + atomic global counter|26.51/122/183/245^3^|17
-|`BUFFER_MANAGER`   |`LOG_FULL` + integration with buffer manager|TODO|TODO
-|`TSan`   |Instrumented with ThreadSanitizer|20.07|74
-|`ngrt`   |Instrumented with RV-Predict[C]@`ad38cb5`|444.82|1166
+|Variant        |Description                |Cycles^1^|Overhead^2^|Instructions^3^
+|`NO_OP`        |Baseline|2.13|0|n/a
+|`NO_SSE`       |Disable the use of SSE instructions|2.28|0.15|4
+|`FUNC_CALL`    |Call an empty function (no inlining)|5.56|3.43|8
+|`LOG_ADDR`     |Log only memory address|4.03|1.90|11
+|`PREFETCH_LOG_ENTRY`|`LOG_ADDR` + increase event buffer size and prefetch log entries|4.78|2.65|11
+|`VOLATILE_BUF_PTR` |`LOG_ADDR` + use atomic load to read event buffer pointer|8.27|6.14|13
+|`CACHED_BUF_PTR`   |`VOLATILE_BUF_PTR` + cache buffer pointer in register|4.13|2.00|14
+|`LOG_HEADER`   |`LOG_ADDR` + log event header|4.09|1.96|13
+|`LOG_VALUE`    |`LOG_HEADER` + log R/W values|4.99|2.86|17
+|`LOG_SRC_LOC`  |`LOG_VALUE` + log source code location|4.41|2.28|15
+|`LOG_FULL`     |`LOG_SRC_LOC` + `PREFETCH_LOG_ENTRY` + `CACHED_BUF_PTR`|5.87|3.74|20
+|`LOG_FULL_128`     |`LOG_FULL` but use 128-bit events|6.44|4.31|17
+|`LOG_FULL_NAIVE`   |`LOG_FULL` w/o optimizations|9.47|7.34|25
+|`GLOBAL_COUNTER`   |`LOG_ADDR` + atomic global counter|26.51/122/183/245^4^|24.38|17
+|`BUFFER_MANAGER`   |`LOG_FULL` + integration with buffer manager|TODO|TODO|TODO
+|`TSan`   |Instrumented with ThreadSanitizer|20.07|17.94|74
+|`ngrt`   |Instrumented with RV-Predict[C]@`1604b5f`|23.85|21.72|94
 |=======================
 *^1^ Average CPU cycles spent per iteration.*
 
-*^2^ Number of instructions of each iteration in the common case.*
+*^2^ Per-event logging overhead in CPU cycles.*
 
-*^3^ The four numbers correspond to the cases of one, two, three, and four logging threads, respectively.*
+*^3^ Number of instructions of each iteration in the common case.*
+
+*^4^ The four numbers correspond to the cases of one, two, three, and four logging threads, respectively.*
 
 ThreadSanitizer is also included for comparison. Its overhead (i.e., extra cycles compared to `NO_OP`) is about *17.94* cycles/iteration, which is almost *5X* of the overhead of `LOG_FULL`, which is only *3.74* cycles/iteration.
 
